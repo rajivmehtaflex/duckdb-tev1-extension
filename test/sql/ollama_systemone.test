@@ -1,0 +1,12 @@
+# name: test/sql/ollama_systemone.test
+# description: verify the scaffold extension loads
+# group: [sql]
+
+require ollama_systemone
+
+query I
+SELECT extension_name = 'ollama_systemone' AND extension_version = '0.1.0'
+FROM duckdb_extensions()
+WHERE extension_name = 'ollama_systemone' AND loaded;
+----
+true

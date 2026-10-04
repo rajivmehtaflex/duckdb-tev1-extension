@@ -1,13 +1,13 @@
 {
-        "dependencies": [
-                "openssl"
-        ],
-        "vcpkg-configuration": {
-                "overlay-ports": [
-                        "./extension-ci-tools/vcpkg_ports"
-                ],
-                "overlay-triplets": [
-                        "./extension-ci-tools/toolchains"
-                ]
-        }
+  "name": "ollama-systemone",
+  "version-string": "0.1.0",
+  "builtin-baseline": "ce613c41372b23b1f51333815feb3edd87ef8a8b",
+  "dependencies": [
+    { "name": "curl", "version>=": "8.13.0" },
+    { "name": "nlohmann-json", "version>=": "3.11.3" }
+  ],
+  "vcpkg-configuration": {
+    "overlay-ports": ["./extension-ci-tools/vcpkg_ports"],
+    "overlay-triplets": ["./extension-ci-tools/toolchains"]
+  }
 }

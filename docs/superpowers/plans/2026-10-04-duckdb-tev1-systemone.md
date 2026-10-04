@@ -93,10 +93,10 @@ Priorities indicate implementation order and release gating: P0 establishes the 
 - Consumes: the official DuckDB C++ extension template.
 - Produces: a loadable extension target named `ollama_systemone`, pinned build baseline, and standard build/test entry points for later tasks.
 
-- [ ] **Subtask 1.1 — Pin the template and DuckDB version.** Select an extension-template commit whose DuckDB submodule is v1.5.6; record both pins in repository metadata.
-- [ ] **Subtask 1.2 — Add extension metadata and build entry points.** Configure the extension name, source list, version metadata, CMake build, Makefile targets, and pinned libcurl/ordered-JSON dependencies.
-- [ ] **Subtask 1.3 — Prove debug and release loading.** Build both configurations against the pinned DuckDB and load each artifact into the matching DuckDB build. Expected result: extension loads and reports its registered name/version.
-- [ ] **Subtask 1.4 — Commit the scaffold.** Keep the template pin, dependency pins, and build metadata in one reviewable checkpoint.
+- [x] **Subtask 1.1 — Pin the template and DuckDB version.** Select an extension-template commit whose DuckDB submodule is v1.5.6; record both pins in repository metadata.
+- [x] **Subtask 1.2 — Add extension metadata and build entry points.** Configure the extension name, source list, version metadata, CMake build, Makefile targets, and pinned libcurl/ordered-JSON dependencies.
+- [x] **Subtask 1.3 — Prove debug and release loading.** Build both configurations against the pinned DuckDB and load each artifact into the matching DuckDB build. Expected result: extension loads and reports its registered name/version.
+- [x] **Subtask 1.4 — Commit the scaffold.** Keep the template pin, dependency pins, and build metadata in one reviewable checkpoint.
 
 **Acceptance:** Debug and release artifacts compile and load against DuckDB v1.5.6. The extension-template commands and resulting artifact paths are recorded for CI and later verification.
 
