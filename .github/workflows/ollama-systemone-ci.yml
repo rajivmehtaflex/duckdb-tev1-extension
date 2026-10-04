@@ -1,0 +1,120 @@
+name: Ollama SystemOne deterministic CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      run_live_ollama:
+        description: Run compatibility checks on the provisioned Ollama runner
+        type: boolean
+        required: true
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ollama-systemone-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deterministic:
+    name: Linux build and deterministic tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      VCPKG_TOOLCHAIN_PATH: ${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake
+      VCPKG_TARGET_TRIPLET: x64-linux
+      GEN: ninja
+    steps:
+      - name: Check out source and pinned submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Ninja
+        run: |
+          sudo apt-get update -y -qq
+          sudo apt-get install -y -qq ninja-build
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Set up pinned vcpkg
+        uses: lukka/run-vcpkg@v11.1
+        with:
+          vcpkgGitCommitId: ce613c41372b23b1f51333815feb3edd87ef8a8b
+
+      - name: Build release extension
+        run: make
+
+      - name: Run SQLLogicTests
+        run: make test
+
+      - name: Build the direct transport test driver
+        run: cmake --build build/release --target systemone_transport_test_driver --parallel 1
+
+      - name: Run native request and response tests
+        run: |
+          cmake --build build/release --target systemone_test_request systemone_test_response --parallel 2
+          ctest --test-dir build/release --output-on-failure -R 'systemone_test_(request|response)'
+
+      - name: Install Python test dependencies
+        run: python -m pip install --disable-pip-version-check 'duckdb==1.5.6' 'pytest==8.3.5'
+
+      - name: Run deterministic Python tests
+        run: >-
+          python -m pytest -q
+          test/python/test_transport.py
+          test/python/test_vectorized.py
+          test/python/test_concurrency.py
+
+  live-ollama:
+    name: Opt-in live Ollama compatibility
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_live_ollama }}
+    # Register a self-hosted runner with this label only after Ollama >=0.35 and
+    # tev1:0.8b are provisioned and the service listens on localhost:11434.
+    runs-on: [self-hosted, linux, x64, ollama-systemone]
+    timeout-minutes: 120
+    env:
+      VCPKG_TOOLCHAIN_PATH: ${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake
+      VCPKG_TARGET_TRIPLET: x64-linux
+      GEN: ninja
+    steps:
+      - name: Check out source and pinned submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Ninja
+        run: |
+          sudo apt-get update -y -qq
+          sudo apt-get install -y -qq ninja-build
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Set up pinned vcpkg
+        uses: lukka/run-vcpkg@v11.1
+        with:
+          vcpkgGitCommitId: ce613c41372b23b1f51333815feb3edd87ef8a8b
+
+      - name: Build release extension
+        run: make
+
+      - name: Confirm provisioned Ollama service and model
+        run: |
+          ollama --version
+          ollama show tev1:0.8b
+          curl --fail --silent --show-error http://localhost:11434/api/version
+
+      - name: Install Python test dependencies
+        run: python3 -m pip install --disable-pip-version-check 'duckdb==1.5.6' 'pytest==8.3.5'
+
+      - name: Run live compatibility suite
+        run: python3 -m pytest -q test/python/test_live_ollama.py
