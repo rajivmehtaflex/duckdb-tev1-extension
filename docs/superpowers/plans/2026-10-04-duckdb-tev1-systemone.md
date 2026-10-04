@@ -6,7 +6,7 @@
 
 **Architecture:** Register a volatile, fallible scalar function and session settings through the DuckDB extension lifecycle. Parse and validate ordered JSON, submit owned request objects to a bounded per-expression libcurl multi dispatcher, validate complete responses, then map them back to DuckDB chunk slots. Keep socket I/O off DuckDB workers while recognizing that the scalar call must wait for its result.
 
-**Tech Stack:** DuckDB C++ extension template pinned to DuckDB v1.5.6; C++; `nlohmann::ordered_json` with SAX duplicate-key detection; libcurl multi; vcpkg-pinned dependencies; SQL, Python, and mock HTTP tests.
+**Tech Stack:** DuckDB C++ extension template pinned to DuckDB v1.5.6; C++; `nlohmann::ordered_json` with SAX duplicate-key detection; libcurl multi; vcpkg-pinned dependencies; native C++, SQL, Python, and mock HTTP tests.
 
 **Spec:** `duckdb-tev1-extension-implementation-plan.md`; end-user installation and usage requirements in `duckdb-tev1-extension-end-to-end.md`.
 
@@ -109,16 +109,17 @@ Priorities indicate implementation order and release gating: P0 establishes the 
 - Create: `src/systemone/config.hpp`, `src/systemone/config.cpp`
 - Create: `src/systemone/types.hpp`
 - Create: `test/sql/ollama_systemone_registration.test`
+- Modify: `CMakeLists.txt` to discover and register isolated native unit-test executables from `test/cpp/test_*.cpp`
 
 **Interfaces:**
 - Consumes: T1's pinned extension loader/build conventions.
 - Produces: `ollama_systemone(state VARCHAR, config JSON) -> JSON`; settings and a consistent invocation settings snapshot for T3/T5; stable shared question metadata types for T3/T4.
 
 - [ ] **Subtask 2.1 — Add lifecycle hooks.** Implement `Load`, `Name`, `Version`, and the C++ entry macro using the pinned template API. Register settings and the scalar function through `ExtensionLoader`.
-- [ ] **Subtask 2.2 — Register session settings and defaults.** Use `DBConfig::AddExtensionOption` with session scope for endpoint, timeout, in-flight, queue, request/response/source-byte, retry, and optional keep-alive settings. Apply the exact v1 defaults in Global Constraints, validate endpoint scheme (`http` or `https`), and capture one consistent settings snapshot per query invocation.
-- [ ] **Subtask 2.3 — Define shared request/response metadata types.** In `src/systemone/types.hpp`, define `enum class QuestionType`, `QuestionSpec {std::string name, QuestionType type, std::string instructions, std::optional<nlohmann::ordered_json> criteria}`, and `ValidatedQuestions {std::vector<QuestionSpec> ordered}`. Preserve criteria order; use `std::nullopt` when `noul` criteria are omitted. Define the response-validator boundary as `nlohmann::ordered_json ValidateResponse(std::string_view response_json, const ValidatedQuestions &questions)`. T3 produces `ValidatedQuestions`; T4 tests and implements against this type without depending on T3's parser implementation.
+- [ ] **Subtask 2.2 — Register session settings and defaults.** Use `DBConfig::AddExtensionOption` with `SetScope::SESSION` as the default scope for endpoint, timeout, in-flight, queue, request/response/source-byte, retry, and optional keep-alive settings. Apply the exact v1 defaults in Global Constraints, validate endpoint scheme (`http` or `https`), and capture one consistent settings snapshot per query invocation.
+- [ ] **Subtask 2.3 — Define shared types and test infrastructure.** In `src/systemone/types.hpp`, define `enum class QuestionType`, `QuestionSpec {std::string name, QuestionType type, std::string instructions, std::optional<nlohmann::ordered_json> criteria}`, and `ValidatedQuestions {std::vector<QuestionSpec> ordered}`. Preserve criteria order; use `std::nullopt` when `noul` criteria are omitted. Define the response-validator boundary as `nlohmann::ordered_json ValidateResponse(std::string_view response_json, const ValidatedQuestions &questions)`. T3 produces `ValidatedQuestions`; T4 tests and implements against this type without depending on T3's parser implementation. In `CMakeLists.txt`, add one test executable per discovered `test/cpp/test_*.cpp`, compiling each test with its corresponding pure C++ module source and registering it with CTest; use `CONFIGURE_DEPENDS` so T3/T4 can add disjoint test files without editing shared CMake files.
 - [ ] **Subtask 2.4 — Register the SQL contract.** Return `LogicalType::JSON()`, mark the scalar function volatile and fallible, and retain DuckDB default NULL propagation.
-- [ ] **Subtask 2.5 — Verify catalog and NULL behavior.** Registration tests inspect argument/return types and setting defaults. With a mock endpoint configured, NULL state/config yields NULL and zero HTTP requests.
+- [ ] **Subtask 2.5 — Verify catalog and NULL behavior.** Registration tests inspect argument/return types and setting defaults, and confirm DuckDB's default NULL propagation. T6 verifies that NULL inputs cause zero mock HTTP requests after transport is integrated.
 - [ ] **Subtask 2.6 — Commit the registered contract and shared interfaces.**
 
 **Acceptance:** Extension loads, exposes the exact SQL signature and settings, and does not submit requests for NULL input rows.
@@ -128,8 +129,7 @@ Priorities indicate implementation order and release gating: P0 establishes the 
 **Files:**
 - Create: `src/systemone/request.hpp`, `src/systemone/request.cpp`
 - Create: `test/cpp/test_request.cpp`
-- Modify: `CMakeLists.txt` to register the native request unit-test target
-- Create: deterministic fixtures under `test/mock/fixtures/`
+- Create: deterministic request fixtures under `test/mock/fixtures/request/`
 
 **Interfaces:**
 - Consumes: T2's settings snapshot and SQL input types.
@@ -139,7 +139,7 @@ Priorities indicate implementation order and release gating: P0 establishes the 
 - [ ] **Subtask 3.2 — Validate the config schema.** Require exactly the `questions` top-level key and 1–64 nonempty question names. Validate nonempty string instructions, allowed question types, allowed per-question keys, and criteria: `noul` omitted or a true/false-to-string object; `choice` an ordered object of 2–26 nonempty option keys whose values are strings or JSON null; `score` an ordered array of 2–26 strings.
 - [ ] **Subtask 3.3 — Preserve ordering and build the fixed request.** Preserve question and option order; always serialize model `tev1:0.8b`, state, and the complete questions object. Do not accept a per-call model override. Add `keep_alive` only when set.
 - [ ] **Subtask 3.4 — Enforce independent limits before enqueueing.** Reject normalized state, questions, and requested-field text over `ollama_max_source_bytes`; separately reject escaped serialized request bodies over `ollama_max_request_bytes`. Never truncate.
-- [ ] **Subtask 3.5 — Verify boundary fixtures.** In `test/cpp/test_request.cpp`, cover question counts 0/1/64/65; choice/score counts 1/2/26/27; invalid `noul` criteria; duplicate and empty names; missing/extra fields; unsupported types; non-string instructions; empty state; malformed JSON; Unicode/escaping; ordering; and both size limits. Run the native `systemone_unit_tests` target; expected result: all request-contract cases pass without an Ollama server.
+- [ ] **Subtask 3.5 — Verify boundary fixtures.** In `test/cpp/test_request.cpp`, cover question counts 0/1/64/65; choice/score counts 1/2/26/27; invalid `noul` criteria; duplicate and empty names; missing/extra fields; unsupported types; non-string instructions; empty state; malformed JSON; Unicode/escaping; ordering; and both size limits. Run `cmake --build build/release --target systemone_test_request` followed by `ctest --test-dir build/release -R systemone_test_request --output-on-failure`; expected result: all request-contract cases pass without an Ollama server.
 - [ ] **Subtask 3.6 — Commit request behavior.**
 
 **Acceptance:** Request tests pass without a server; accepted shapes preserve order and serialize correctly, and all specified invalid shapes/limits fail before dispatcher admission.
@@ -148,17 +148,16 @@ Priorities indicate implementation order and release gating: P0 establishes the 
 
 **Files:**
 - Create: `src/systemone/response.hpp`, `src/systemone/response.cpp`
-- Create: response fixtures under `test/mock/fixtures/`
+- Create: response fixtures under `test/mock/fixtures/response/`
 - Create: `test/cpp/test_response.cpp`
-- Modify: `CMakeLists.txt` to register response cases in the native unit-test target
 
 **Interfaces:**
 - Consumes: T2's shared `ValidatedQuestions` contract; integrated calls receive the value produced by T3.
 - Produces: a validated complete response serialized as JSON for T6; preserves unknown permitted response fields.
 
 - [ ] **Subtask 4.1 — Validate the response envelope.** Require an object with required `model`, `answers`, and `usage` fields as specified by the Ollama contract; retain the complete response rather than rebuilding only answer fields.
-- [ ] **Subtask 4.2 — Validate one expected answer per configured question.** Require the right answer field for each configured type; validate `noul` and probabilities in [0,1], choice labels against configured option keys, score in `[0, criterion_count - 1]`, confidence in [0,1], and required probability/legend fields. Preserve numeric values and extra fields.
-- [ ] **Subtask 4.3 — Verify fixtures.** In `test/cpp/test_response.cpp`, verify mixed-type fixtures preserve `model`, `answers`, `usage`, and extra fields; malformed JSON, missing/extra required answer data, wrong types, unexpected labels, non-finite/out-of-range values, and missing probability/legend fields fail with concise categories. Run the native `systemone_unit_tests` target; expected result: all response-contract cases pass without an Ollama server.
+- [ ] **Subtask 4.2 — Validate one expected answer per configured question.** Require `noul` answers to contain `type` and `noul` (a probability in [0,1]); require `choice` answers to contain `type`, a configured choice label, probabilities for exactly the configured option keys with each value in [0,1], and confidence in [0,1]; require `score` answers to contain `type`, score in `[0, criterion_count - 1]`, probabilities for exactly the zero-based criterion keys with each value in [0,1], a legend for those keys, and confidence in [0,1]. Require top-level `model`, `answers`, and `usage` with nonnegative integer `input_tokens`/`output_tokens`. Permit unrelated additional response fields and preserve numeric values.
+- [ ] **Subtask 4.3 — Verify fixtures.** In `test/cpp/test_response.cpp`, verify mixed-type fixtures preserve `model`, `answers`, `usage`, and extra fields; malformed JSON, missing/extra required answer data, wrong types, unexpected labels, non-finite/out-of-range values, and missing probability/legend fields fail with concise categories. Run `cmake --build build/release --target systemone_test_response` followed by `ctest --test-dir build/release -R systemone_test_response --output-on-failure`; expected result: all response-contract cases pass without an Ollama server.
 - [ ] **Subtask 4.4 — Commit response behavior.**
 
 **Acceptance:** Complete valid responses round-trip as DuckDB-compatible JSON; invalid envelopes and answer values are rejected while forward-compatible additional fields remain intact.
@@ -167,6 +166,8 @@ Priorities indicate implementation order and release gating: P0 establishes the 
 
 **Files:**
 - Create: `src/systemone/transport.hpp`, `src/systemone/transport.cpp`
+- Create: `test/cpp/transport_test_driver.cpp` as a direct C++ dispatcher test probe
+- Modify: `CMakeLists.txt` to build the transport probe against the pure dispatcher and pinned dependencies
 - Create: deterministic mock server at `test/mock/server.py`
 - Create: `test/python/test_transport.py`
 
@@ -174,11 +175,11 @@ Priorities indicate implementation order and release gating: P0 establishes the 
 - Consumes: T2's immutable settings snapshot; T3's owned request bytes; T4's response validator.
 - Produces: completion results tagged with original chunk slots; a `FunctionData`-owned dispatcher shared by workers for one bound expression.
 
-- [ ] **Subtask 5.1 — Create expression-owned event loops.** Use two dedicated I/O event-loop threads per bound expression, each owning a libcurl multi handle and reusable connection cache. Ensure the dispatcher destructor cancels pending work and joins threads.
+- [ ] **Subtask 5.1 — Create expression-owned event loops.** Use two dedicated I/O event-loop threads per bound expression, each owning a libcurl multi handle and reusable connection cache. Keep bind data immutable across workers and implement `FunctionData::Copy()`/`Equals()` so plan/expression copies share the expression-scoped dispatcher safely. Ensure the dispatcher destructor cancels pending work and joins threads.
 - [ ] **Subtask 5.2 — Enforce admission and transport bounds.** Bound `ollama_max_inflight` and `ollama_queue_capacity` across workers for the expression. Use owned request/response buffers and bounded response callbacks. Set JSON content type, keep-alive, no redirects, connect/total deadlines, and no body-content logging.
 - [ ] **Subtask 5.3 — Implement retry and cancellation rules.** Retry at most once only when libcurl confirms the request body was not sent. Do not retry after upload starts, on HTTP status errors, malformed response, or timeout. On interruption, stop admission, abort queued/active requests, and free all owned buffers. Keep missing model, unsupported Ollama version/route, refused connection, and timeout as distinguishable diagnostic categories.
 - [ ] **Subtask 5.4 — Add bounded observability.** Track only counters/timings: queued, active, completed, queue wait, request duration, timeout/retry/error counts, and response bytes. Keep diagnostics opt-in or expose through extension metrics.
-- [ ] **Subtask 5.5 — Verify with the mock server.** In `test/python/test_transport.py`, assert max active transfers, queue capacity/backpressure, connection reuse, slot-tagged out-of-order completions, retry eligibility, timeout/response-size behavior, distinguishable failure categories, cancellation, and no leaked threads/handles. Run `python -m pytest -q test/python/test_transport.py`; expected result: all transport lifecycle and policy checks pass.
+- [ ] **Subtask 5.5 — Verify with the mock server.** The Python test starts `test/mock/server.py` and runs `transport_test_driver.cpp` against its URL, so transport is testable before T6 exposes the SQL callback. Assert max active transfers, queue capacity/backpressure, connection reuse, slot-tagged out-of-order completions, retry eligibility, timeout/response-size behavior, distinguishable failure categories, cancellation, and no leaked threads/handles. Run `cmake --build build/release --target systemone_transport_test_driver` followed by `python -m pytest -q test/python/test_transport.py`; expected result: all transport lifecycle and policy checks pass without Ollama.
 - [ ] **Subtask 5.6 — Commit dispatcher behavior.**
 
 **Acceptance:** Mock-server transport checks demonstrate per-expression limits, bounded buffering/wait, allowed retry behavior, cancellation, and clean teardown. DuckDB workers perform no synchronous socket reads and hold no shared dispatcher mutex while waiting.
@@ -198,9 +199,9 @@ Priorities indicate implementation order and release gating: P0 establishes the 
 - [ ] **Subtask 6.1 — Decode actual DuckDB chunks correctly.** Use each vector's selection index and validity mask; do not assume 2,048 rows. Preserve chunk slot indexes separately from completion order.
 - [ ] **Subtask 6.2 — Reuse config parsing within each chunk.** Parse constant config once for that chunk/local function state; for varying config, parse each distinct row value once and reuse repeats within that chunk. Do not infer constancy from equal values across unrelated chunks.
 - [ ] **Subtask 6.3 — Submit bounded owned work.** For each non-NULL row, validate/build before admission and submit owned strings/bytes tagged with the input slot. Submit at most the available in-flight window, collect completions, then submit more; do not enqueue a whole large chunk's payloads at once.
-- [ ] **Subtask 6.4 — Handle failures and interruption by slot.** If any request fails, stop submitting more rows from that chunk; let already submitted lower slots finish, cancel submitted higher slots, drain cleanup, then report the lowest failing slot in that submitted window. On query interruption, cancel all queued and active work.
+- [ ] **Subtask 6.4 — Handle failures and interruption by slot.** If any request fails, stop submitting more rows from that chunk; let already submitted lower slots finish, cancel submitted higher slots, drain cleanup, then report the lowest failing slot in that submitted window. Poll the DuckDB client context for query interruption during long submission/wait loops; on interruption, cancel all queued and active work and throw DuckDB's interruption exception.
 - [ ] **Subtask 6.5 — Write output only after validation.** Validate successful responses before writing results; write with DuckDB-managed string storage and set validity correctly. Network callbacks must never touch output vectors.
-- [ ] **Subtask 6.6 — Verify end-to-end SQL/vector behavior.** In `test/sql/ollama_systemone.test`, `test/python/test_vectorized.py`, and `test/python/test_concurrency.py`, check JSON extraction, NULL propagation/no request, multiple chunks, constant/varying configs, dictionary vectors, filtered selections, delayed out-of-order responses, exact slot mapping, concurrent queries, one mock request per evaluated non-NULL row, and cancellation/lifecycle cleanup. Run `make test` and `python -m pytest -q test/python/test_vectorized.py test/python/test_concurrency.py`; expected result: SQL, vector, and concurrency cases pass.
+- [ ] **Subtask 6.6 — Verify end-to-end SQL/vector behavior.** Keep `test/sql/ollama_systemone.test` deterministic without a running server by checking registration, NULL propagation, and SQL error contracts. In `test/python/test_vectorized.py` and `test/python/test_concurrency.py`, start the mock server and execute SQL statements to check JSON extraction, multiple chunks, constant/varying configs, dictionary vectors, filtered selections, delayed out-of-order responses, exact slot mapping, concurrent queries, one mock request per evaluated non-NULL row, and cancellation/lifecycle cleanup. Run `make test` and `python -m pytest -q test/python/test_vectorized.py test/python/test_concurrency.py`; expected result: SQLLogicTests and mock-backed vector/concurrency cases pass.
 - [ ] **Subtask 6.7 — Commit the scalar integration.**
 
 **Acceptance:** SQL tests preserve row mapping for supported vector shapes and concurrent execution; failures identify the one-based current-chunk slot; no DuckDB-owned memory escapes the callback.
@@ -239,8 +240,8 @@ Priorities indicate implementation order and release gating: P0 establishes the 
 ## Suggested Subagent Allocation
 
 - **Coordinator:** Complete T1 and T2 first, including `types.hpp`; own shared headers and integration points so parallel agents have a stable contract.
-- **Agent A — T3:** Own `request.hpp/.cpp`, `test_request.py`, and request fixtures.
-- **Agent B — T4:** Own `response.hpp/.cpp`, `test_response.py`, and response fixtures; consume the T2 `ValidatedQuestions` contract and use local test fixtures rather than waiting on T3's implementation.
+- **Agent A — T3:** Own `request.hpp/.cpp`, `test/cpp/test_request.cpp`, and request fixtures. Build/run only its native test target in an isolated build directory.
+- **Agent B — T4:** Own `response.hpp/.cpp`, `test/cpp/test_response.cpp`, and response fixtures; consume the T2 `ValidatedQuestions` contract and use local test fixtures rather than waiting on T3's implementation. Build/run only its native test target in an isolated build directory.
 - **After A and B finish — T5:** Assign transport files and mock-server tests to one agent because dispatcher lifecycle and request/response interfaces meet here.
 - **Then — T6:** Integrate vector execution after T5; keep the scalar callback and registration edits under one owner.
 - **Early parallel work:** A third agent can prepare T7 docs or CI files after T1/T2, with exclusive ownership of those paths. Final artifact and live compatibility acceptance wait for T6.
