@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import socket
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -26,18 +27,26 @@ class State:
             self.active = 0
             self.max_active = 0
             self.connections: set[str] = set()
+            self.reuse_close_triggered = 0
             self.states: dict[str, int] = {}
             self.connection_headers: list[str] = []
 
-    def begin(self, client: tuple[str, int], state: str, connection: str) -> int:
+    def begin(self, client: tuple[str, int], state: str, connection: str) -> tuple[int, bool]:
         with self.lock:
             self.requests += 1
             self.active += 1
             self.max_active = max(self.max_active, self.active)
-            self.connections.add(f"{client[0]}:{client[1]}")
+            connection_id = f"{client[0]}:{client[1]}"
+            reused = connection_id in self.connections
+            self.connections.add(connection_id)
             self.states[state] = self.states.get(state, 0) + 1
             self.connection_headers.append(connection.lower())
-            return self.epoch
+            return self.epoch, reused
+
+    def record_reuse_close(self, epoch: int) -> None:
+        with self.lock:
+            if epoch == self.epoch:
+                self.reuse_close_triggered += 1
 
     def end(self, epoch: int) -> None:
         with self.lock:
@@ -52,6 +61,7 @@ class State:
                 "max_active": self.max_active,
                 "connection_count": len(self.connections),
                 "connections": sorted(self.connections),
+                "reuse_close_triggered": self.reuse_close_triggered,
                 "states": dict(self.states),
                 "connection_headers": list(self.connection_headers),
             }
@@ -167,8 +177,19 @@ class Handler(BaseHTTPRequestHandler):
 
         state_name = body.get("state", "") if isinstance(body, dict) else ""
         state_name = str(state_name)
-        epoch = self.state.begin(self.client_address, state_name, self.headers.get("Connection", ""))
+        epoch, reused_connection = self.state.begin(
+            self.client_address, state_name, self.headers.get("Connection", "")
+        )
         try:
+            if state_name == "reuse-close" and reused_connection:
+                self.state.record_reuse_close(epoch)
+                self.close_connection = True
+                try:
+                    self.connection.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+                self.connection.close()
+                return
             if path != "/v1/systemone":
                 status, payload, content_type, delay_ms = (
                     404,

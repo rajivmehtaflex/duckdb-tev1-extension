@@ -89,9 +89,15 @@ def driver() -> Path:
 
 
 def run_driver(driver: Path, mode: str, endpoint: str, timeout: float = 12) -> dict[str, Any]:
+    environment = os.environ.copy()
+    for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"):
+        environment.pop(name, None)
+    environment["NO_PROXY"] = "*"
+    environment["no_proxy"] = "*"
     completed = subprocess.run(
         [str(driver), mode, endpoint],
         cwd=ROOT,
+        env=environment,
         capture_output=True,
         text=True,
         timeout=timeout,
@@ -101,6 +107,7 @@ def run_driver(driver: Path, mode: str, endpoint: str, timeout: float = 12) -> d
         f"transport_test_driver {mode} exited {completed.returncode}\n"
         f"stdout:\n{completed.stdout}\nstderr:\n{completed.stderr}"
     )
+    assert completed.stderr == "", f"successful driver wrote to stderr:\n{completed.stderr}"
     try:
         return json.loads(completed.stdout)
     except json.JSONDecodeError as error:
@@ -147,6 +154,19 @@ def test_keep_alive_reuses_http_connections(driver: Path, mock_server: dict[str,
     assert all("keep-alive" in header for header in server_stats["connection_headers"])
 
 
+def test_reused_connection_that_closes_after_reading_post_is_not_replayed(
+    driver: Path, mock_server: dict[str, Any]
+) -> None:
+    output = run_driver(driver, "reuse_close", mock_server["url"])
+    server_stats = _get_json(mock_server["stats_url"])
+
+    assert server_stats["reuse_close_triggered"] == 1
+    assert server_stats["states"].get("reuse-close") == 1
+    assert output["results"][-1]["success"] is False
+    assert output["results"][-1]["retries"] == 0
+    assert output["stats"]["retry_count"] == 0
+
+
 def test_results_keep_their_original_slots_when_completions_arrive_out_of_order(
     driver: Path, mock_server: dict[str, Any]
 ) -> None:
@@ -167,7 +187,11 @@ def test_404_errors_distinguish_missing_model_from_unsupported_route(
 
     assert results[1]["error"] == "MODEL_NOT_FOUND"
     assert results[2]["error"] == "UNSUPPORTED_ROUTE"
-    assert _get_json(mock_server["stats_url"])["requests"] == 2
+    assert all(result["retries"] == 0 for result in results.values())
+    assert output["stats"]["retry_count"] == 0
+    server_stats = _get_json(mock_server["stats_url"])
+    assert server_stats["requests"] == 2
+    assert server_stats["states"] == {"missing-model": 1, "unsupported-route": 1}
 
 
 def test_http_status_errors_are_not_retried(driver: Path, mock_server: dict[str, Any]) -> None:
@@ -179,7 +203,7 @@ def test_http_status_errors_are_not_retried(driver: Path, mock_server: dict[str,
     assert result["http_status"] == 500
     assert result["retries"] == 0
     assert output["stats"]["retry_count"] == 0
-    assert _get_json(mock_server["stats_url"])["requests"] == 1
+    assert _get_json(mock_server["stats_url"])["states"] == {"http-500": 1}
 
 
 def test_malformed_response_is_rejected(driver: Path, mock_server: dict[str, Any]) -> None:
@@ -187,6 +211,9 @@ def test_malformed_response_is_rejected(driver: Path, mock_server: dict[str, Any
 
     assert output["results"][0]["error"] == "INVALID_RESPONSE"
     assert output["results"][0]["success"] is False
+    assert output["results"][0]["retries"] == 0
+    assert output["stats"]["retry_count"] == 0
+    assert _get_json(mock_server["stats_url"])["states"] == {"malformed": 1}
 
 
 def test_oversized_response_is_stopped_at_the_configured_limit(driver: Path, mock_server: dict[str, Any]) -> None:
@@ -194,14 +221,20 @@ def test_oversized_response_is_stopped_at_the_configured_limit(driver: Path, moc
 
     assert output["results"][0]["error"] == "RESPONSE_TOO_LARGE"
     assert output["results"][0]["success"] is False
+    assert output["results"][0]["retries"] == 0
+    assert output["stats"]["retry_count"] == 0
     assert output["stats"]["response_bytes"] > 0
+    assert _get_json(mock_server["stats_url"])["states"] == {"oversize": 1}
 
 
 def test_request_timeout_is_categorized(driver: Path, mock_server: dict[str, Any]) -> None:
     output = run_driver(driver, "timeout", mock_server["url"])
 
     assert output["results"][0]["error"] == "TIMEOUT"
+    assert output["results"][0]["retries"] == 0
     assert output["stats"]["timeout_count"] == 1
+    assert output["stats"]["retry_count"] == 0
+    assert _get_json(mock_server["stats_url"])["states"] == {"delay:300:timeout": 1}
 
 
 def test_connection_refusal_is_retried_only_before_upload(driver: Path) -> None:
@@ -215,6 +248,66 @@ def test_connection_refusal_is_retried_only_before_upload(driver: Path) -> None:
     assert result["error"] == "CONNECTION_REFUSED"
     assert result["retries"] == 1
     assert output["stats"]["retry_count"] == 1
+
+
+def test_non_refusal_connection_failure_has_its_own_category(driver: Path) -> None:
+    endpoint = "http://systemone-transport-test.invalid./v1/systemone"
+    output = run_driver(driver, "resolve_failure", endpoint, timeout=6)
+    result = output["results"][0]
+
+    assert result["error"] == "CONNECTION_FAILURE"
+    assert result["retries"] == 0
+
+
+def test_admission_wait_exits_when_its_token_is_cancelled(driver: Path, mock_server: dict[str, Any]) -> None:
+    output = run_driver(driver, "admission_cancel", mock_server["url"])
+    results = _results(output)
+    observations = output["observations"]
+
+    assert observations["blocked_before_token"] is True
+    assert observations["resolved_after_token"] is True
+    assert observations["token_wait_ms"] < 500
+    assert observations["admission_handle_valid"] is False
+    assert results[2]["error"] == "CANCELLED"
+    assert output["stats"]["cancelled_count"] == 1
+    assert _get_json(mock_server["stats_url"])["states"].get("must-not-be-sent", 0) == 0
+
+
+def test_queued_handle_cancellation_does_not_stop_other_accepted_work(
+    driver: Path, mock_server: dict[str, Any]
+) -> None:
+    output = run_driver(driver, "queued_cancel", mock_server["url"])
+    results = _results(output)
+    server_stats = _get_json(mock_server["stats_url"])
+
+    assert results[1]["success"] is True
+    assert results[2]["error"] == "CANCELLED"
+    assert results[3]["success"] is True
+    assert output["stats"]["cancelled_count"] == 1
+    assert server_stats["states"] == {"delay:500:queued-active": 1, "queued-survivor": 1}
+
+
+def test_closed_dispatcher_rejects_new_admission_immediately(driver: Path, mock_server: dict[str, Any]) -> None:
+    output = run_driver(driver, "closed_admission", mock_server["url"])
+
+    assert output["results"][0]["error"] == "DISPATCHER_CLOSED"
+    assert output["observations"]["submit_ms"] < 250
+    assert _get_json(mock_server["stats_url"])["requests"] == 0
+
+
+def test_destroying_with_outstanding_work_is_prompt_and_new_dispatcher_runs(
+    driver: Path, mock_server: dict[str, Any]
+) -> None:
+    started = time.monotonic()
+    output = run_driver(driver, "destroy_outstanding", mock_server["url"], timeout=6)
+    elapsed = time.monotonic() - started
+    results = _results(output)
+
+    assert elapsed < 2
+    assert output["observations"]["teardown_ms"] < 1500
+    assert results[1]["error"] == "CANCELLED"
+    assert results[2]["success"] is True
+    assert _get_json(mock_server["stats_url"])["states"].get("after-destroy") == 1
 
 
 def test_cancel_aborts_active_and_queued_work_and_tears_down(driver: Path, mock_server: dict[str, Any]) -> None:

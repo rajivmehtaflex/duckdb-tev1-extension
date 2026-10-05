@@ -1,5 +1,11 @@
 #include "systemone/transport.hpp"
 
+#ifdef _WIN32
+#include <winsock2.h>
+#else
+#include <cerrno>
+#endif
+
 #include <curl/curl.h>
 
 #include <algorithm>
@@ -27,6 +33,11 @@ namespace {
 using Clock = std::chrono::steady_clock;
 constexpr std::size_t EVENT_LOOP_COUNT = 2;
 constexpr std::size_t ERROR_CATEGORY_COUNT = 12;
+#ifdef _WIN32
+constexpr long CONNECTION_REFUSED_OS_ERROR = WSAECONNREFUSED;
+#else
+constexpr long CONNECTION_REFUSED_OS_ERROR = ECONNREFUSED;
+#endif
 static_assert(static_cast<std::size_t>(TransportErrorCategory::CURL_FAILURE) + 1 == ERROR_CATEGORY_COUNT,
               "Update the transport error counter when adding an error category");
 
@@ -404,6 +415,7 @@ private:
 		uint64_t retries = 0;
 		uint64_t total_response_bytes = 0;
 		uint64_t attempt_response_bytes = 0;
+		size_t upload_offset = 0;
 		std::string response_body;
 		bool response_too_large = false;
 		bool response_buffer_error = false;
@@ -591,9 +603,32 @@ private:
 		return job->owner->WriteResponse(*job, data, size, count);
 	}
 
+	static size_t ReadRequestBodyCallback(char *buffer, size_t size, size_t count, void *userdata) noexcept {
+		auto *job = static_cast<Job *>(userdata);
+		if (job == nullptr || (size != 0 && count > std::numeric_limits<size_t>::max() / size)) {
+			return CURL_READFUNC_ABORT;
+		}
+		const auto buffer_size = size * count;
+		if (buffer_size == 0 || job->upload_offset >= job->request.body.size()) {
+			return 0;
+		}
+		const auto bytes_left = job->request.body.size() - job->upload_offset;
+		const auto bytes_to_copy = std::min(buffer_size, bytes_left);
+		std::memcpy(buffer, job->request.body.data() + job->upload_offset, bytes_to_copy);
+		job->upload_offset += bytes_to_copy;
+		return bytes_to_copy;
+	}
+
+	static int SeekRequestBodyCallback(void *, curl_off_t, int) noexcept {
+		// A single application attempt is never replayable. Retry eligibility is
+		// decided by the dispatcher after libcurl reports how much was uploaded.
+		return CURL_SEEKFUNC_FAIL;
+	}
+
 	void ResetAttempt(const std::shared_ptr<Job> &job) {
 		job->response_body.clear();
 		job->attempt_response_bytes = 0;
+		job->upload_offset = 0;
 		job->response_too_large = false;
 		job->response_buffer_error = false;
 		job->error_buffer.fill('\0');
@@ -645,8 +680,11 @@ private:
 		};
 		set_option(CURLOPT_URL, settings.endpoint.c_str());
 		set_option(CURLOPT_POST, 1L);
-		set_option(CURLOPT_POSTFIELDS, job->request.body.data());
 		set_option(CURLOPT_POSTFIELDSIZE_LARGE, static_cast<curl_off_t>(job->request.body.size()));
+		set_option(CURLOPT_READFUNCTION, &ReadRequestBodyCallback);
+		set_option(CURLOPT_READDATA, job.get());
+		set_option(CURLOPT_SEEKFUNCTION, &SeekRequestBodyCallback);
+		set_option(CURLOPT_SEEKDATA, job.get());
 		set_option(CURLOPT_HTTPHEADER, job->headers);
 		set_option(CURLOPT_WRITEFUNCTION, &WriteResponseCallback);
 		set_option(CURLOPT_WRITEDATA, job.get());
@@ -732,21 +770,28 @@ private:
 		case CURLE_COULDNT_RESOLVE_PROXY:
 		case CURLE_COULDNT_CONNECT:
 		case CURLE_SSL_CONNECT_ERROR:
+		case CURLE_SEND_FAIL_REWIND:
 			return true;
 		default:
 			return false;
 		}
 	}
 
-	TransportErrorCategory ClassifyCurlError(CURLcode result) const {
+	TransportErrorCategory ClassifyCurlError(CURLcode result, bool os_errno_available, long os_errno) const {
 		if (result == CURLE_OPERATION_TIMEDOUT) {
 			return TransportErrorCategory::TIMEOUT;
 		}
 		if (result == CURLE_COULDNT_CONNECT) {
-			return TransportErrorCategory::CONNECTION_REFUSED;
+			if (os_errno_available && os_errno == CONNECTION_REFUSED_OS_ERROR) {
+				return TransportErrorCategory::CONNECTION_REFUSED;
+			}
+			return TransportErrorCategory::CONNECTION_FAILURE;
 		}
 		if (result == CURLE_COULDNT_RESOLVE_HOST || result == CURLE_COULDNT_RESOLVE_PROXY ||
 		    result == CURLE_SSL_CONNECT_ERROR) {
+			return TransportErrorCategory::CONNECTION_FAILURE;
+		}
+		if (result == CURLE_SEND_FAIL_REWIND) {
 			return TransportErrorCategory::CONNECTION_FAILURE;
 		}
 		return TransportErrorCategory::CURL_FAILURE;
@@ -758,6 +803,8 @@ private:
 		curl_off_t uploaded = -1;
 		const bool upload_count_available =
 		    curl_easy_getinfo(easy, CURLINFO_SIZE_UPLOAD_T, &uploaded) == CURLE_OK;
+		long os_errno = 0;
+		const bool os_errno_available = curl_easy_getinfo(easy, CURLINFO_OS_ERRNO, &os_errno) == CURLE_OK;
 		curl_multi_remove_handle(multi, easy);
 		active.erase(easy);
 		CleanupEasy(job);
@@ -779,7 +826,6 @@ private:
 		}
 		if (curl_result != CURLE_OK && IsRetryablePreUpload(curl_result, upload_count_available, uploaded, job)) {
 			++job->retries;
-			ResetAttempt(job);
 			{
 				std::lock_guard<std::mutex> guard(mutex);
 				if (job->location == JobLocation::ACTIVE) {
@@ -790,7 +836,7 @@ private:
 			return true;
 		}
 		if (curl_result != CURLE_OK) {
-			const auto category = ClassifyCurlError(curl_result);
+			const auto category = ClassifyCurlError(curl_result, os_errno_available, os_errno);
 			CompleteFromLoop(job, BuildResult(job, category, DiagnosticFor(category), http_status));
 			return false;
 		}

@@ -25,6 +25,7 @@ namespace {
 using namespace std::chrono_literals;
 using duckdb::systemone::BuildRequest;
 using duckdb::systemone::OwnedRequest;
+using duckdb::systemone::RequestCompletion;
 using duckdb::systemone::RequestHandle;
 using duckdb::systemone::SettingsSnapshot;
 using duckdb::systemone::TransportDispatcher;
@@ -183,6 +184,18 @@ Json RunKeepAlive(const std::string &endpoint, uint64_t count) {
 	std::vector<uint64_t> completion_order;
 	CollectAll(handles, results, completion_order);
 	handles.clear();
+	return MakeOutput(results, completion_order, dispatcher.StatsSnapshot());
+}
+
+Json RunReusedConnectionClose(const std::string &endpoint) {
+	auto settings = MakeSettings(endpoint, 1, 0, 5000, 1048576, 1);
+	TransportDispatcher dispatcher(settings);
+	std::vector<TransportResult> results;
+	std::vector<uint64_t> completion_order;
+	for (const auto *state : {"prime-loop-0", "prime-loop-1", "reuse-close"}) {
+		RequestHandle handle = dispatcher.Submit(results.size() + 1, MakeRequest(state, settings));
+		AppendResult(handle.completion.get(), results, completion_order);
+	}
 	return MakeOutput(results, completion_order, dispatcher.StatsSnapshot());
 }
 
@@ -363,6 +376,136 @@ Json RunRetryRefused(const std::string &endpoint) {
 	return RunSimple(endpoint, {"retry-before-upload"}, 700, 1048576, 1);
 }
 
+Json RunAdmissionCancellation(const std::string &endpoint) {
+	auto settings = MakeSettings(endpoint, 1, 0, 5000);
+	TransportDispatcher dispatcher(settings);
+	RequestHandle active = dispatcher.Submit(1, MakeRequest("delay:2500:admission-active", settings));
+	auto admission_cancelled = std::make_shared<std::atomic<bool>>(false);
+	std::mutex mutex;
+	std::condition_variable cv;
+	bool submit_started = false;
+	bool submit_done = false;
+	std::optional<RequestHandle> blocked_handle;
+	std::exception_ptr submit_error;
+	std::thread submitter([&] {
+		{
+			std::lock_guard<std::mutex> guard(mutex);
+			submit_started = true;
+			cv.notify_all();
+		}
+		try {
+			auto handle = dispatcher.Submit(2, MakeRequest("must-not-be-sent", settings), admission_cancelled);
+			std::lock_guard<std::mutex> guard(mutex);
+			blocked_handle.emplace(std::move(handle));
+			submit_done = true;
+			cv.notify_all();
+		} catch (...) {
+			std::lock_guard<std::mutex> guard(mutex);
+			submit_error = std::current_exception();
+			submit_done = true;
+			cv.notify_all();
+		}
+	});
+	{
+		std::unique_lock<std::mutex> guard(mutex);
+		cv.wait_for(guard, 1s, [&] { return submit_started; });
+	}
+	std::this_thread::sleep_for(80ms);
+	bool blocked_before_token = false;
+	{
+		std::lock_guard<std::mutex> guard(mutex);
+		blocked_before_token = !submit_done;
+	}
+	const auto release_started = std::chrono::steady_clock::now();
+	admission_cancelled->store(true, std::memory_order_relaxed);
+	bool resolved_after_token = false;
+	{
+		std::unique_lock<std::mutex> guard(mutex);
+		resolved_after_token = cv.wait_for(guard, 1s, [&] { return submit_done; });
+	}
+	const auto token_wait_ms = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+	                                                     std::chrono::steady_clock::now() - release_started)
+	                                                     .count());
+	if (!resolved_after_token) {
+		dispatcher.Cancel();
+	}
+	submitter.join();
+	if (submit_error) {
+		std::rethrow_exception(submit_error);
+	}
+	if (!blocked_handle) {
+		throw std::runtime_error("cancelled admission did not return a handle");
+	}
+	const bool admission_handle_valid = blocked_handle->IsValid();
+	auto admission_result = blocked_handle->completion.get();
+	blocked_handle.reset();
+	dispatcher.Cancel(active);
+	auto active_result = active.completion.get();
+	active = RequestHandle();
+	std::vector<TransportResult> results{std::move(active_result), std::move(admission_result)};
+	std::vector<uint64_t> completion_order{results[0].slot, results[1].slot};
+	Json observations{{"blocked_before_token", blocked_before_token},
+	                  {"resolved_after_token", resolved_after_token},
+	                  {"token_wait_ms", token_wait_ms},
+	                  {"admission_handle_valid", admission_handle_valid}};
+	return MakeOutput(results, completion_order, dispatcher.StatsSnapshot(), std::move(observations));
+}
+
+Json RunQueuedCancellation(const std::string &endpoint) {
+	auto settings = MakeSettings(endpoint, 1, 2, 5000);
+	TransportDispatcher dispatcher(settings);
+	std::vector<RequestHandle> handles;
+	handles.push_back(dispatcher.Submit(1, MakeRequest("delay:500:queued-active", settings)));
+	handles.push_back(dispatcher.Submit(2, MakeRequest("must-be-cancelled-in-queue", settings)));
+	handles.push_back(dispatcher.Submit(3, MakeRequest("queued-survivor", settings)));
+	dispatcher.Cancel(handles[1]);
+	std::vector<TransportResult> results;
+	std::vector<uint64_t> completion_order;
+	CollectAll(handles, results, completion_order);
+	handles.clear();
+	return MakeOutput(results, completion_order, dispatcher.StatsSnapshot());
+}
+
+Json RunClosedAdmission(const std::string &endpoint) {
+	auto settings = MakeSettings(endpoint, 1, 0);
+	TransportDispatcher dispatcher(settings);
+	dispatcher.Cancel();
+	const auto started = std::chrono::steady_clock::now();
+	RequestHandle handle = dispatcher.Submit(1, MakeRequest("closed-admission", settings));
+	const auto submit_ms = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+	                                              std::chrono::steady_clock::now() - started)
+	                                              .count());
+	auto result = handle.completion.get();
+	handle = RequestHandle();
+	std::vector<TransportResult> results{std::move(result)};
+	std::vector<uint64_t> completion_order{results.front().slot};
+	return MakeOutput(results, completion_order, dispatcher.StatsSnapshot(), Json{{"submit_ms", submit_ms}});
+}
+
+Json RunDestroyOutstanding(const std::string &endpoint) {
+	RequestCompletion outstanding;
+	const auto started = std::chrono::steady_clock::now();
+	{
+		auto settings = MakeSettings(endpoint, 1, 0, 10000);
+		TransportDispatcher dispatcher(settings);
+		RequestHandle handle = dispatcher.Submit(1, MakeRequest("delay:4000:destroy-outstanding", settings));
+		outstanding = std::move(handle.completion);
+		std::this_thread::sleep_for(60ms);
+	}
+	const auto teardown_ms = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+	                                                 std::chrono::steady_clock::now() - started)
+	                                                 .count());
+	auto destroyed_result = outstanding.get();
+	auto settings = MakeSettings(endpoint, 1, 0, 5000);
+	TransportDispatcher replacement(settings);
+	RequestHandle replacement_handle = replacement.Submit(2, MakeRequest("after-destroy", settings));
+	auto replacement_result = replacement_handle.completion.get();
+	replacement_handle = RequestHandle();
+	std::vector<TransportResult> results{std::move(destroyed_result), std::move(replacement_result)};
+	std::vector<uint64_t> completion_order{results[0].slot, results[1].slot};
+	return MakeOutput(results, completion_order, replacement.StatsSnapshot(), Json{{"teardown_ms", teardown_ms}});
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -379,20 +522,32 @@ int main(int argc, char **argv) {
 			output = RunConcurrency(endpoint);
 		} else if (mode == "keepalive") {
 			output = RunKeepAlive(endpoint, 6);
+		} else if (mode == "reuse_close") {
+			output = RunReusedConnectionClose(endpoint);
 		} else if (mode == "out_of_order") {
 			output = RunOutOfOrder(endpoint);
 		} else if (mode == "not_found") {
-			output = RunSimple(endpoint, {"missing-model", "unsupported-route"});
+			output = RunSimple(endpoint, {"missing-model", "unsupported-route"}, 5000, 1048576, 1);
 		} else if (mode == "http_error") {
-			output = RunSimple(endpoint, {"http-500"});
+			output = RunSimple(endpoint, {"http-500"}, 5000, 1048576, 1);
 		} else if (mode == "malformed") {
-			output = RunSimple(endpoint, {"malformed"});
+			output = RunSimple(endpoint, {"malformed"}, 5000, 1048576, 1);
 		} else if (mode == "oversize") {
-			output = RunSimple(endpoint, {"oversize"}, 5000, 512);
+			output = RunSimple(endpoint, {"oversize"}, 5000, 512, 1);
 		} else if (mode == "timeout") {
-			output = RunSimple(endpoint, {"delay:300:timeout"}, 70);
+			output = RunSimple(endpoint, {"delay:300:timeout"}, 70, 1048576, 1);
 		} else if (mode == "retry_refused") {
 			output = RunRetryRefused(endpoint);
+		} else if (mode == "resolve_failure") {
+			output = RunSimple(endpoint, {"resolve-failure"}, 2000, 1048576, 0);
+		} else if (mode == "admission_cancel") {
+			output = RunAdmissionCancellation(endpoint);
+		} else if (mode == "queued_cancel") {
+			output = RunQueuedCancellation(endpoint);
+		} else if (mode == "closed_admission") {
+			output = RunClosedAdmission(endpoint);
+		} else if (mode == "destroy_outstanding") {
+			output = RunDestroyOutstanding(endpoint);
 		} else if (mode == "cancel") {
 			output = RunCancel(endpoint);
 		} else {
