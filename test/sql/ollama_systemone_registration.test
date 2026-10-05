@@ -1,0 +1,72 @@
+# name: test/sql/ollama_systemone_registration.test
+# description: verify the SystemOne SQL contract and setting defaults
+# group: [sql]
+
+require ollama_systemone
+
+query I
+SELECT count(*) = 1 AND bool_and(
+    function_type = 'scalar'
+    AND parameter_types = ['VARCHAR', 'JSON']
+    AND return_type = 'JSON'
+    AND stability = 'VOLATILE'
+)
+FROM duckdb_functions()
+WHERE function_name = 'ollama_systemone';
+----
+true
+
+query I
+SELECT count(*) = 10
+    AND count(*) FILTER (WHERE name = 'ollama_endpoint' AND value = 'http://localhost:11434/v1/systemone' AND input_type = 'VARCHAR') = 1
+    AND count(*) FILTER (WHERE name = 'ollama_connect_timeout_ms' AND value = '1000' AND input_type = 'UBIGINT') = 1
+    AND count(*) FILTER (WHERE name = 'ollama_request_timeout_ms' AND value = '120000' AND input_type = 'UBIGINT') = 1
+    AND count(*) FILTER (WHERE name = 'ollama_max_inflight' AND value = '8' AND input_type = 'UBIGINT') = 1
+    AND count(*) FILTER (WHERE name = 'ollama_queue_capacity' AND value = '16' AND input_type = 'UBIGINT') = 1
+    AND count(*) FILTER (WHERE name = 'ollama_max_request_bytes' AND value = '65536' AND input_type = 'UBIGINT') = 1
+    AND count(*) FILTER (WHERE name = 'ollama_max_response_bytes' AND value = '1048576' AND input_type = 'UBIGINT') = 1
+    AND count(*) FILTER (WHERE name = 'ollama_max_source_bytes' AND value = '1024' AND input_type = 'UBIGINT') = 1
+    AND count(*) FILTER (WHERE name = 'ollama_retry_count' AND value = '1' AND input_type = 'UBIGINT') = 1
+    AND count(*) FILTER (WHERE name = 'ollama_keep_alive' AND value IS NULL AND input_type = 'VARCHAR') = 1
+FROM duckdb_settings()
+WHERE name LIKE 'ollama_%';
+----
+true
+
+statement error
+SET ollama_endpoint = 'ftp://localhost/v1/systemone';
+----
+
+statement error
+SET ollama_endpoint = 'http://:11434/v1/systemone';
+----
+
+statement error
+SET ollama_endpoint = 'http://[not-an-ip]/v1/systemone';
+----
+
+statement error
+SET ollama_request_timeout_ms = 0;
+----
+
+statement error
+SET ollama_connect_timeout_ms = 18446744073709551615;
+----
+
+statement error
+SET ollama_max_inflight = 0;
+----
+
+statement error
+SET ollama_max_request_bytes = 0;
+----
+
+statement error
+SET ollama_retry_count = 2;
+----
+
+query I
+SELECT ollama_systemone(NULL, '{}') IS NULL
+   AND ollama_systemone('state', NULL) IS NULL;
+----
+true

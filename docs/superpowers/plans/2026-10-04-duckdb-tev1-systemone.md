@@ -103,8 +103,8 @@ Priorities indicate implementation order and release gating: P0 establishes the 
 ## Task 2: Define Types and Registration
 
 **Files:**
-- Create: `src/include/tev1_extension.hpp`
-- Create: `src/tev1_extension.cpp`
+- Modify: `src/include/tev1_extension.hpp` (T1 declaration)
+- Modify: `src/tev1_extension.cpp` (T1 lifecycle stub)
 - Create: `src/registration.cpp`
 - Create: `src/systemone/config.hpp`, `src/systemone/config.cpp`
 - Create: `src/systemone/types.hpp`
@@ -115,12 +115,12 @@ Priorities indicate implementation order and release gating: P0 establishes the 
 - Consumes: T1's pinned extension loader/build conventions.
 - Produces: `ollama_systemone(state VARCHAR, config JSON) -> JSON`; settings and a consistent invocation settings snapshot for T3/T5; stable shared question metadata types for T3/T4.
 
-- [ ] **Subtask 2.1 — Add lifecycle hooks.** Implement `Load`, `Name`, `Version`, and the C++ entry macro using the pinned template API. Register settings and the scalar function through `ExtensionLoader`.
-- [ ] **Subtask 2.2 — Register session settings and defaults.** Use `DBConfig::AddExtensionOption` with `SetScope::SESSION` as the default scope for endpoint, timeout, in-flight, queue, request/response/source-byte, retry, and optional keep-alive settings. Apply the exact v1 defaults in Global Constraints, validate endpoint scheme (`http` or `https`), and capture one consistent settings snapshot per query invocation.
-- [ ] **Subtask 2.3 — Define shared types and test infrastructure.** In `src/systemone/types.hpp`, define `enum class QuestionType`, `QuestionSpec {std::string name, QuestionType type, std::string instructions, std::optional<nlohmann::ordered_json> criteria}`, and `ValidatedQuestions {std::vector<QuestionSpec> ordered}`. Preserve criteria order; use `std::nullopt` when `noul` criteria are omitted. Define the response-validator boundary as `nlohmann::ordered_json ValidateResponse(std::string_view response_json, const ValidatedQuestions &questions)`. T3 produces `ValidatedQuestions`; T4 tests and implements against this type without depending on T3's parser implementation. In `CMakeLists.txt`, add one test executable per discovered `test/cpp/test_*.cpp`, compiling each test with its corresponding pure C++ module source and registering it with CTest; use `CONFIGURE_DEPENDS` so T3/T4 can add disjoint test files without editing shared CMake files.
-- [ ] **Subtask 2.4 — Register the SQL contract.** Return `LogicalType::JSON()`, mark the scalar function volatile and fallible, and retain DuckDB default NULL propagation.
-- [ ] **Subtask 2.5 — Verify catalog and NULL behavior.** Registration tests inspect argument/return types and setting defaults, and confirm DuckDB's default NULL propagation. T6 verifies that NULL inputs cause zero mock HTTP requests after transport is integrated.
-- [ ] **Subtask 2.6 — Commit the registered contract and shared interfaces.**
+- [x] **Subtask 2.1 — Wire the lifecycle hooks.** Connect the existing T1 `Load`, `Name`, `Version`, and C++ entry points to settings and scalar registration through the pinned `ExtensionLoader` API.
+- [x] **Subtask 2.2 — Register session settings and defaults.** Use `DBConfig::AddExtensionOption` with `SetScope::SESSION` as the default scope for endpoint, connect/request timeouts, in-flight, queue, request/response/source-byte limits, retry, and optional keep-alive settings. Apply the exact v1 defaults in Global Constraints, validate endpoint scheme (`http` or `https`), and expose a helper that reads one immutable settings snapshot for execution state.
+- [x] **Subtask 2.3 — Define shared types and test infrastructure.** In `src/systemone/types.hpp`, define `enum class QuestionType`, `QuestionSpec {std::string name, QuestionType type, std::string instructions, std::optional<nlohmann::ordered_json> criteria}`, and `ValidatedQuestions {std::vector<QuestionSpec> ordered}`. Preserve criteria order; use `std::nullopt` when `noul` criteria are omitted. Define the response-validator boundary as `nlohmann::ordered_json ValidateResponse(std::string_view response_json, const ValidatedQuestions &questions)`. T3 produces `ValidatedQuestions`; T4 tests and implements against this type without depending on T3's parser implementation. In `CMakeLists.txt`, add one test executable per discovered `test/cpp/test_*.cpp`, compiling each test with its corresponding pure C++ module source and registering it with CTest; use `CONFIGURE_DEPENDS` for both test and module source globs so T3/T4 can add disjoint files without editing shared CMake files.
+- [x] **Subtask 2.4 — Register the SQL contract.** Return `LogicalType::JSON()`, mark the scalar function volatile and fallible, and retain DuckDB default NULL propagation.
+- [x] **Subtask 2.5 — Verify catalog and NULL behavior.** Registration tests inspect argument/return types and setting defaults, and confirm DuckDB's default NULL propagation. T6 verifies that NULL inputs cause zero mock HTTP requests after transport is integrated.
+- [x] **Subtask 2.6 — Commit the registered contract and shared interfaces.**
 
 **Acceptance:** Extension loads, exposes the exact SQL signature and settings, and does not submit requests for NULL input rows.
 
@@ -139,7 +139,7 @@ Priorities indicate implementation order and release gating: P0 establishes the 
 - [ ] **Subtask 3.2 — Validate the config schema.** Require exactly the `questions` top-level key and 1–64 nonempty question names. Validate nonempty string instructions, allowed question types, allowed per-question keys, and criteria: `noul` omitted or a true/false-to-string object; `choice` an ordered object of 2–26 nonempty option keys whose values are strings or JSON null; `score` an ordered array of 2–26 strings.
 - [ ] **Subtask 3.3 — Preserve ordering and build the fixed request.** Preserve question and option order; always serialize model `tev1:0.8b`, state, and the complete questions object. Do not accept a per-call model override. Add `keep_alive` only when set.
 - [ ] **Subtask 3.4 — Enforce independent limits before enqueueing.** Reject normalized state, questions, and requested-field text over `ollama_max_source_bytes`; separately reject escaped serialized request bodies over `ollama_max_request_bytes`. Never truncate.
-- [ ] **Subtask 3.5 — Verify boundary fixtures.** In `test/cpp/test_request.cpp`, cover question counts 0/1/64/65; choice/score counts 1/2/26/27; invalid `noul` criteria; duplicate and empty names; missing/extra fields; unsupported types; non-string instructions; empty state; malformed JSON; Unicode/escaping; ordering; and both size limits. Run `cmake --build build/release --target systemone_test_request` followed by `ctest --test-dir build/release -R systemone_test_request --output-on-failure`; expected result: all request-contract cases pass without an Ollama server.
+- [ ] **Subtask 3.5 — Verify boundary fixtures.** In `test/cpp/test_request.cpp`, cover question counts 0/1/64/65; choice/score counts 1/2/26/27; invalid `noul` criteria; duplicate and empty names; missing/extra fields; unsupported types; non-string instructions; empty state; malformed JSON; Unicode/escaping; ordering; and both size limits. Run `cmake --build build/release --target systemone_test_request` followed by `ctest --test-dir build/release/extension/ollama_systemone -R systemone_test_request --output-on-failure`; expected result: all request-contract cases pass without an Ollama server.
 - [ ] **Subtask 3.6 — Commit request behavior.**
 
 **Acceptance:** Request tests pass without a server; accepted shapes preserve order and serialize correctly, and all specified invalid shapes/limits fail before dispatcher admission.
