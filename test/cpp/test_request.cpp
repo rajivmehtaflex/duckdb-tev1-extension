@@ -15,6 +15,7 @@
 
 using duckdb::systemone::BuildRequest;
 using duckdb::systemone::OwnedRequest;
+using duckdb::systemone::ParseConfig;
 using duckdb::systemone::QuestionType;
 using duckdb::systemone::SettingsSnapshot;
 using OrderedJson = nlohmann::ordered_json;
@@ -218,6 +219,19 @@ void TestFixedRequestAndKeepAlive() {
 	      "configured keep_alive is appended");
 }
 
+void TestValidatedConfigCanBeReusedAcrossStates() {
+	const auto config = ParseConfig(Fixture("valid_mixed.json"));
+	const auto first = BuildRequest("first state", config, Settings());
+	const auto second = BuildRequest("second state", config, Settings());
+	const auto first_body = OrderedJson::parse(first.body);
+	const auto second_body = OrderedJson::parse(second.body);
+	Check(first_body.at("state") == "first state", "reused config serializes the current first state");
+	Check(second_body.at("state") == "second state", "reused config serializes the current second state");
+	Check(first_body.at("questions") == second_body.at("questions"), "reused config preserves ordered questions");
+	Check(first.questions.ordered.size() == second.questions.ordered.size(),
+	      "reused config retains response-validation metadata");
+}
+
 void TestPreservesQuestionAndCriterionOrder() {
 	const auto request = BuildRequest("state", Fixture("valid_mixed.json"), Settings());
 	Check(request.questions.ordered.size() == 3, "all questions retained");
@@ -298,6 +312,7 @@ int main() {
 		TestNoulCriteria();
 		TestDuplicateKeys();
 		TestFixedRequestAndKeepAlive();
+		TestValidatedConfigCanBeReusedAcrossStates();
 		TestPreservesQuestionAndCriterionOrder();
 		TestUnicodeAndEscaping();
 		TestIndependentByteLimits();

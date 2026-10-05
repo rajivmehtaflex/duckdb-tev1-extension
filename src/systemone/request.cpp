@@ -67,7 +67,7 @@ private:
 	throw std::invalid_argument("ollama_systemone request: " + message);
 }
 
-OrderedJson ParseConfig(std::string_view config_json) {
+OrderedJson ParseConfigJson(std::string_view config_json) {
 	DuplicateKeySax sax;
 	const bool valid = OrderedJson::sax_parse(config_json.begin(), config_json.end(), &sax);
 	if (sax.has_duplicate_key) {
@@ -271,15 +271,19 @@ std::string BuildNormalizedSource(std::string_view state, const OrderedJson &que
 
 } // namespace
 
-OwnedRequest BuildRequest(std::string_view state, std::string_view config_json, const SettingsSnapshot &settings) {
+ValidatedConfig ParseConfig(std::string_view config_json) {
+	const auto config = ParseConfigJson(config_json);
+	const OrderedJson *questions_json = nullptr;
+	auto validated = ValidateQuestions(config, questions_json);
+	return {*questions_json, std::move(validated)};
+}
+
+OwnedRequest BuildRequest(std::string_view state, const ValidatedConfig &config, const SettingsSnapshot &settings) {
 	if (state.empty()) {
 		Invalid("state must be nonempty");
 	}
 
-	const auto config = ParseConfig(config_json);
-	const OrderedJson *questions_json = nullptr;
-	auto validated = ValidateQuestions(config, questions_json);
-	auto normalized_source = BuildNormalizedSource(state, *questions_json);
+	auto normalized_source = BuildNormalizedSource(state, config.questions_json);
 	if (normalized_source.size() > settings.max_source_bytes) {
 		Invalid("normalized source exceeds ollama_max_source_bytes");
 	}
@@ -287,7 +291,7 @@ OwnedRequest BuildRequest(std::string_view state, std::string_view config_json, 
 	OrderedJson payload = OrderedJson::object();
 	payload["model"] = "tev1:0.8b";
 	payload["state"] = std::string(state);
-	payload["questions"] = *questions_json;
+	payload["questions"] = config.questions_json;
 	if (settings.keep_alive) {
 		payload["keep_alive"] = *settings.keep_alive;
 	}
@@ -300,7 +304,11 @@ OwnedRequest BuildRequest(std::string_view state, std::string_view config_json, 
 	if (body.size() > settings.max_request_bytes) {
 		Invalid("serialized request exceeds ollama_max_request_bytes");
 	}
-	return {std::move(body), std::move(normalized_source), std::move(validated)};
+	return {std::move(body), std::move(normalized_source), config.questions};
+}
+
+OwnedRequest BuildRequest(std::string_view state, std::string_view config_json, const SettingsSnapshot &settings) {
+	return BuildRequest(state, ParseConfig(config_json), settings);
 }
 
 } // namespace systemone

@@ -1,5 +1,5 @@
 # name: test/sql/ollama_systemone.test
-# description: verify the scaffold extension loads
+# description: verify extension loading, NULL handling, and server-free request validation
 # group: [sql]
 
 require ollama_systemone
@@ -10,3 +10,24 @@ FROM duckdb_extensions()
 WHERE extension_name = 'ollama_systemone' AND loaded;
 ----
 true
+
+query I
+SELECT ollama_systemone(NULL, '{"questions":{"valid":{"type":"noul","instructions":"Is this true?"}}}') IS NULL
+   AND ollama_systemone('state', NULL) IS NULL;
+----
+true
+
+statement error
+SELECT ollama_systemone('state', '{"questions":{"valid":{"type":"noul","type":"choice","instructions":"Is this true?"}}}');
+----
+<REGEX>:.*duplicate JSON object key.*
+
+statement error
+SELECT ollama_systemone('state', '{"questions":{"valid":{"type":"noul"}}}');
+----
+<REGEX>:.*each question requires type and instructions.*
+
+statement error
+SELECT ollama_systemone('', '{"questions":{"valid":{"type":"noul","instructions":"Is this true?"}}}');
+----
+<REGEX>:.*state must be nonempty.*

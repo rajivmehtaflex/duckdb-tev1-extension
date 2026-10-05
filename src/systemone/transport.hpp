@@ -10,6 +10,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <future>
+#include <functional>
 #include <memory>
 #include <string>
 
@@ -114,7 +115,8 @@ public:
 	TransportDispatcher &operator=(const TransportDispatcher &) = delete;
 
 	RequestHandle Submit(uint64_t slot, OwnedRequest request,
-	                     std::shared_ptr<std::atomic<bool>> admission_cancelled = nullptr);
+	                     std::shared_ptr<std::atomic<bool>> admission_cancelled = nullptr,
+	                     std::function<bool()> admission_cancel_check = {});
 	void Cancel(const RequestHandle &handle) noexcept;
 	void Cancel() noexcept;
 	TransportStats StatsSnapshot() const;

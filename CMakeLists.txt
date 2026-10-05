@@ -16,13 +16,20 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 include_directories(src/include src)
 
-set(EXTENSION_SOURCES src/tev1_extension.cpp src/registration.cpp src/systemone/config.cpp)
+set(EXTENSION_SOURCES
+  src/tev1_extension.cpp
+  src/registration.cpp
+  src/systemone/config.cpp
+  src/systemone/request.cpp
+  src/systemone/response.cpp
+  src/systemone/transport.cpp
+  src/systemone/scalar_function.cpp)
 
 build_static_extension(${TARGET_NAME} ${EXTENSION_SOURCES})
 build_loadable_extension(${TARGET_NAME} " " ${EXTENSION_SOURCES})
 
-target_link_libraries(${EXTENSION_NAME} CURL::libcurl nlohmann_json::nlohmann_json)
-target_link_libraries(${LOADABLE_EXTENSION_NAME} CURL::libcurl nlohmann_json::nlohmann_json)
+target_link_libraries(${EXTENSION_NAME} CURL::libcurl Threads::Threads nlohmann_json::nlohmann_json)
+target_link_libraries(${LOADABLE_EXTENSION_NAME} CURL::libcurl Threads::Threads nlohmann_json::nlohmann_json)
 
 file(GLOB SYSTEMONE_TEST_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/test/cpp/test_*.cpp")
 file(GLOB SYSTEMONE_MODULE_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/systemone/*.cpp")

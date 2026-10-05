@@ -234,7 +234,8 @@ public:
 	}
 
 	RequestHandle Submit(uint64_t slot, OwnedRequest request,
-	                     const std::shared_ptr<std::atomic<bool>> &admission_cancelled) {
+	                     const std::shared_ptr<std::atomic<bool>> &admission_cancelled,
+	                     const std::function<bool()> &admission_cancel_check) {
 		auto job = std::make_shared<Job>(this, slot, std::move(request));
 		auto completion = job->promise.get_future();
 		auto permit_taken = std::make_shared<bool>(false);
@@ -247,10 +248,22 @@ public:
 			}
 		});
 		std::unique_lock<std::mutex> lock(mutex);
-		while (!closing && !IsAdmissionCancelled(admission_cancelled) && !CanAdmitLocked()) {
+		bool callback_cancelled = false;
+		auto admission_was_cancelled = [&]() {
+			return callback_cancelled || IsAdmissionCancelled(admission_cancelled);
+		};
+		while (!closing && !admission_was_cancelled() && !CanAdmitLocked()) {
 			admission_cv.wait_for(lock, std::chrono::milliseconds(10));
+			if (admission_cancel_check) {
+				lock.unlock();
+				callback_cancelled = admission_cancel_check();
+				lock.lock();
+				if (callback_cancelled && admission_cancelled != nullptr) {
+					admission_cancelled->store(true, std::memory_order_relaxed);
+				}
+			}
 		}
-		if (IsAdmissionCancelled(admission_cancelled)) {
+		if (admission_was_cancelled()) {
 			lock.unlock();
 			job->promise.set_value(ErrorResult(slot, TransportErrorCategory::CANCELLED,
 			                                   "SystemOne request admission was cancelled"));
@@ -995,8 +1008,9 @@ TransportDispatcher::TransportDispatcher(SettingsSnapshot settings)
 TransportDispatcher::~TransportDispatcher() = default;
 
 RequestHandle TransportDispatcher::Submit(uint64_t slot, OwnedRequest request,
-	                                         std::shared_ptr<std::atomic<bool>> admission_cancelled) {
-	return impl->Submit(slot, std::move(request), admission_cancelled);
+                                          std::shared_ptr<std::atomic<bool>> admission_cancelled,
+                                          std::function<bool()> admission_cancel_check) {
+	return impl->Submit(slot, std::move(request), admission_cancelled, admission_cancel_check);
 }
 
 void TransportDispatcher::Cancel(const RequestHandle &handle) noexcept {

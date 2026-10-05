@@ -29,6 +29,7 @@ class State:
             self.connections: set[str] = set()
             self.reuse_close_triggered = 0
             self.states: dict[str, int] = {}
+            self.completed_states: list[str] = []
             self.connection_headers: list[str] = []
 
     def begin(self, client: tuple[str, int], state: str, connection: str) -> tuple[int, bool]:
@@ -48,10 +49,11 @@ class State:
             if epoch == self.epoch:
                 self.reuse_close_triggered += 1
 
-    def end(self, epoch: int) -> None:
+    def end(self, epoch: int, state: str) -> None:
         with self.lock:
             if epoch == self.epoch:
                 self.active -= 1
+                self.completed_states.append(state)
 
     def snapshot(self) -> dict[str, Any]:
         with self.lock:
@@ -63,31 +65,33 @@ class State:
                 "connections": sorted(self.connections),
                 "reuse_close_triggered": self.reuse_close_triggered,
                 "states": dict(self.states),
+                "completed_states": list(self.completed_states),
                 "connection_headers": list(self.connection_headers),
             }
 
 
 def response_for(body: dict[str, Any], state: str) -> tuple[int, bytes, str, int]:
-    if state == "missing-model":
-        return 404, b'{"error":"model not found: tev1:0.8b"}', "application/json", 0
-    if state == "unsupported-route":
-        return 404, b'{"error":"route not found"}', "application/json", 0
-    if state == "http-500":
-        return 500, b'{"error":"test server failure"}', "application/json", 0
-    if state == "malformed":
-        return 200, b'{"model":', "application/json", 0
-    if state == "oversize":
-        result = valid_response(body)
-        result["test_padding"] = "x" * 32768
-        return 200, json.dumps(result, separators=(",", ":")).encode(), "application/json", 0
-
     delay_ms = 0
+    response_state = state
     if state.startswith("delay:"):
         parts = state.split(":", 2)
         try:
             delay_ms = max(0, min(int(parts[1]), 10000))
+            response_state = parts[2]
         except (IndexError, ValueError):
             return 400, b'{"error":"invalid delay state"}', "application/json", 0
+    if response_state == "missing-model":
+        return 404, b'{"error":"model not found: tev1:0.8b"}', "application/json", delay_ms
+    if response_state == "unsupported-route":
+        return 404, b'{"error":"route not found"}', "application/json", delay_ms
+    if response_state == "http-500":
+        return 500, b'{"error":"test server failure"}', "application/json", delay_ms
+    if response_state == "malformed":
+        return 200, b'{"model":', "application/json", delay_ms
+    if response_state == "oversize":
+        result = valid_response(body)
+        result["test_padding"] = "x" * 32768
+        return 200, json.dumps(result, separators=(",", ":")).encode(), "application/json", delay_ms
     response = valid_response(body)
     return 200, json.dumps(response, separators=(",", ":")).encode(), "application/json", delay_ms
 
@@ -203,7 +207,7 @@ class Handler(BaseHTTPRequestHandler):
                 time.sleep(delay_ms / 1000.0)
             self._send(status, payload, content_type)
         finally:
-            self.state.end(epoch)
+            self.state.end(epoch, state_name)
 
 
 class Server(ThreadingHTTPServer):

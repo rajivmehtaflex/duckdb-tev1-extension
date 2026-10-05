@@ -28,6 +28,14 @@ struct ValidatedQuestions {
 	std::vector<QuestionSpec> ordered;
 };
 
+// Parsed once per distinct config value within a DuckDB input chunk. Keep the
+// ordered JSON representation for faithful request serialization and the
+// validated metadata for response checks.
+struct ValidatedConfig {
+	nlohmann::ordered_json questions_json;
+	ValidatedQuestions questions;
+};
+
 nlohmann::ordered_json ValidateResponse(std::string_view response_json, const ValidatedQuestions &questions);
 
 } // namespace systemone
