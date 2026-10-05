@@ -17,6 +17,8 @@
 namespace duckdb {
 namespace systemone {
 
+constexpr std::size_t TRANSPORT_EVENT_LOOP_COUNT = 2;
+
 enum class TransportErrorCategory : uint8_t {
 	NONE,
 	CANCELLED,

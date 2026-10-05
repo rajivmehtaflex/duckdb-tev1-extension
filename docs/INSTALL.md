@@ -6,16 +6,21 @@ extension targets DuckDB **v1.5.6**. Use the same DuckDB version and operating
 system/architecture as the extension binary: DuckDB rejects binaries built for
 a different version or platform.
 
-No release repository has been selected for this project yet. The examples
-below show the local build, Community Extensions, and custom public repository
-routes. Publishing and the final route choice are separate release work; the
-CI workflow in this repository does not publish binaries.
+The selected intended release route is DuckDB Community Extensions. Submission
+and publication are pending, so the Community Extensions install commands below
+will work only after acceptance and publication. The repository's `template`
+remote still points to `duckdb/extension-template`; no project release
+repository or published binaries are configured yet. Custom public GitHub Pages
+distribution is documented as an alternative, not the selected route.
 
 ## Requirements
 
 - DuckDB v1.5.6, including the matching Python package when using Python.
 - Ollama v0.35 or later, with `tev1:0.8b` downloaded.
 - An HTTP endpoint reachable from the DuckDB process.
+
+Install Ollama using the [official Ollama download instructions](https://ollama.com/download),
+then verify its version is at least 0.35 before installing the model.
 
 Install the model and start Ollama if your installer has not already started
 the service:
@@ -116,10 +121,18 @@ https://OWNER.github.io/REPO/
   v1.5.6/
     linux_amd64/ollama_systemone.duckdb_extension
     linux_arm64/ollama_systemone.duckdb_extension
+    linux_amd64_musl/ollama_systemone.duckdb_extension
+    linux_arm64_musl/ollama_systemone.duckdb_extension
     osx_amd64/ollama_systemone.duckdb_extension
     osx_arm64/ollama_systemone.duckdb_extension
     windows_amd64/ollama_systemone.duckdb_extension
+    windows_arm64/ollama_systemone.duckdb_extension
+    windows_amd64_mingw/ollama_systemone.duckdb_extension
 ```
+
+HTTPS custom repositories require DuckDB's `httpfs` extension. DuckDB attempts
+to autoload it when needed; make sure it is available in the environment where
+the install runs.
 
 Publish only platform binaries that have been built and verified. Replace the
 placeholders with the actual public Pages base URL after a release repository

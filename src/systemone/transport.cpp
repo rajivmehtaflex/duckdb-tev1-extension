@@ -31,7 +31,6 @@ namespace systemone {
 namespace {
 
 using Clock = std::chrono::steady_clock;
-constexpr std::size_t EVENT_LOOP_COUNT = 2;
 constexpr std::size_t ERROR_CATEGORY_COUNT = 12;
 #ifdef _WIN32
 constexpr long CONNECTION_REFUSED_OS_ERROR = WSAECONNREFUSED;
@@ -198,7 +197,7 @@ public:
 			curl_multi_setopt(loop.multi, CURLMOPT_MAXCONNECTS, max_connections);
 		}
 		try {
-			for (std::size_t index = 0; index < EVENT_LOOP_COUNT; ++index) {
+			for (std::size_t index = 0; index < TRANSPORT_EVENT_LOOP_COUNT; ++index) {
 				loops[index].thread = std::thread([this, index]() { EventLoop(index); });
 			}
 		} catch (...) {
@@ -464,7 +463,7 @@ private:
 	}
 
 	void ReserveForLoopLocked(const std::shared_ptr<Job> &job) {
-		const std::size_t loop_index = next_loop++ % EVENT_LOOP_COUNT;
+		const std::size_t loop_index = next_loop++ % TRANSPORT_EVENT_LOOP_COUNT;
 		job->loop_index = loop_index;
 		job->location = JobLocation::INBOX;
 		loops[loop_index].inbox.push_back(job);
@@ -990,7 +989,7 @@ private:
 	mutable std::mutex mutex;
 	std::condition_variable admission_cv;
 	std::condition_variable loop_cv;
-	std::array<LoopState, EVENT_LOOP_COUNT> loops;
+	std::array<LoopState, TRANSPORT_EVENT_LOOP_COUNT> loops;
 	std::deque<std::shared_ptr<Job>> pending;
 	std::unordered_map<uint64_t, std::shared_ptr<Job>> jobs;
 	TransportStats stats;

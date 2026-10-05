@@ -59,6 +59,14 @@ add_executable(systemone_transport_test_driver
 target_include_directories(systemone_transport_test_driver PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(systemone_transport_test_driver PRIVATE CURL::libcurl Threads::Threads nlohmann_json::nlohmann_json)
 
+add_executable(systemone_transport_benchmark
+  test/benchmark/transport_benchmark.cpp
+  src/systemone/request.cpp
+  src/systemone/response.cpp
+  src/systemone/transport.cpp)
+target_include_directories(systemone_transport_benchmark PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_link_libraries(systemone_transport_benchmark PRIVATE CURL::libcurl Threads::Threads nlohmann_json::nlohmann_json)
+
 install(
   TARGETS ${EXTENSION_NAME}
   EXPORT "${DUCKDB_EXPORT_SET}"

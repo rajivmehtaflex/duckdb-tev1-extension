@@ -54,8 +54,11 @@ jobs:
       - name: Run SQLLogicTests
         run: make test
 
-      - name: Build the direct transport test driver
-        run: cmake --build build/release --target systemone_transport_test_driver --parallel 1
+      - name: Build direct transport and benchmark drivers
+        run: >-
+          cmake --build build/release
+          --target systemone_transport_test_driver systemone_transport_benchmark
+          --parallel 2
 
       - name: Run native request and response tests
         run: |
@@ -68,6 +71,7 @@ jobs:
       - name: Run deterministic Python tests
         run: >-
           python -m pytest -q
+          test/python/test_benchmark.py
           test/python/test_transport.py
           test/python/test_vectorized.py
           test/python/test_concurrency.py
@@ -109,7 +113,12 @@ jobs:
 
       - name: Confirm provisioned Ollama service and model
         run: |
+          uname -a
+          lscpu
+          free -h
+          ./build/release/duckdb --version
           ollama --version
+          ollama list
           ollama show tev1:0.8b
           curl --fail --silent --show-error http://localhost:11434/api/version
 
@@ -117,4 +126,6 @@ jobs:
         run: python3 -m pip install --disable-pip-version-check 'duckdb==1.5.6' 'pytest==8.3.5'
 
       - name: Run live compatibility suite
+        env:
+          SYSTEMONE_RUN_LIVE_OLLAMA: '1'
         run: python3 -m pytest -q test/python/test_live_ollama.py

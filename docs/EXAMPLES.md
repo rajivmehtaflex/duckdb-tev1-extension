@@ -164,6 +164,10 @@ con.execute(
 - The default normalized source limit is 1,024 bytes and the serialized
   request-body limit is 65,536 bytes. These are separate checks; input is never
   silently truncated. The byte guard does not prove an exact tokenizer count.
+- Although 64 questions is the schema maximum, a maximum-count config can exceed
+  the installed Tev1 model's context even when it passes the 1,024-byte source
+  guard. Version 1 does not tokenize or preflight against model context, so
+  Ollama may reject such a request.
 - The default timeout for one request is 120 seconds. The scalar call waits for
   inference results, although dedicated extension threads perform socket I/O.
 

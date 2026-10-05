@@ -18,7 +18,47 @@ jobs:
     with:
       duckdb_version: v1.5.6
       ci_tools_version: v1.5.6
-      extension_name: waddle
+      extension_name: ollama_systemone
+      # The SystemOne transport depends on libcurl networking and is not
+      # available in DuckDB's Emscripten/WASM targets.
+      exclude_archs: wasm_mvp;wasm_eh;wasm_threads
+      # Build the complete native platform matrix, including CI-tools opt-ins.
+      opt_in_archs: linux_amd64_musl;linux_arm64_musl;windows_arm64
+      reduced_ci_mode: disabled
+
+  package-platform-artifacts:
+    name: Package versioned platform artifacts
+    runs-on: ubuntu-24.04
+    needs: duckdb-stable-build
+    steps:
+      - name: Download successful platform builds
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ollama_systemone-v1.5.6-extension-*
+          path: downloaded
+
+      - name: Arrange DuckDB repository layout
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifact/v1.5.6
+          for artifact_dir in downloaded/ollama_systemone-v1.5.6-extension-*; do
+            [[ -d "$artifact_dir" ]] || continue
+            artifact_name="${artifact_dir##*/}"
+            platform="${artifact_name#ollama_systemone-v1.5.6-extension-}"
+            extension_file="$artifact_dir/ollama_systemone.duckdb_extension"
+            test -f "$extension_file"
+            mkdir -p "artifact/v1.5.6/$platform"
+            cp "$extension_file" "artifact/v1.5.6/$platform/"
+          done
+          test "$(find artifact/v1.5.6 -mindepth 2 -maxdepth 2 -name ollama_systemone.duckdb_extension | wc -l)" -eq 9
+
+      - name: Upload versioned platform artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ollama_systemone-v1.5.6-platforms
+          path: artifact
+          if-no-files-found: error
 
   code-quality-check:
     name: Code Quality Check
@@ -26,5 +66,5 @@ jobs:
     with:
       duckdb_version: v1.5.6
       ci_tools_version: v1.5.6
-      extension_name: waddle
+      extension_name: ollama_systemone
       format_checks: 'format;tidy'
