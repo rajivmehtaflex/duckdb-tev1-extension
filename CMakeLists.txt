@@ -44,6 +44,14 @@ if(SYSTEMONE_TEST_SOURCES)
   endforeach()
 endif()
 
+add_executable(systemone_transport_test_driver
+  test/cpp/transport_test_driver.cpp
+  src/systemone/request.cpp
+  src/systemone/response.cpp
+  src/systemone/transport.cpp)
+target_include_directories(systemone_transport_test_driver PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_link_libraries(systemone_transport_test_driver PRIVATE CURL::libcurl Threads::Threads nlohmann_json::nlohmann_json)
+
 install(
   TARGETS ${EXTENSION_NAME}
   EXPORT "${DUCKDB_EXPORT_SET}"
