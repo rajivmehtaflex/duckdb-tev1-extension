@@ -1,0 +1,31 @@
+{
+  "model": "tev1:0.8b",
+  "answers": {
+    "is_urgent": {
+      "type": "noul",
+      "noul": 0.82,
+      "server_metadata": {"source": "local", "version": 1}
+    },
+    "department": {
+      "type": "choice",
+      "choice": "tech",
+      "probabilities": {"billing": 0.08, "tech": 0.87, "other": 0.05},
+      "confidence": 0.73,
+      "explanation": "The issue is technical."
+    },
+    "severity": {
+      "type": "score",
+      "score": 1.75,
+      "legend": {"0": "Low", "1": "Medium", "2": "High"},
+      "probabilities": {"0": 0.1, "1": 0.25, "2": 0.65},
+      "confidence": 0.42
+    }
+  },
+  "usage": {
+    "input_tokens": 123,
+    "output_tokens": 17,
+    "total_tokens": 140
+  },
+  "trace_id": "systemone-test-001",
+  "server_metadata": {"region": "local", "attempt": 1}
+}
