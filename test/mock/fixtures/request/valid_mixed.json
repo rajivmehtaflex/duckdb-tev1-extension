@@ -1,0 +1,1 @@
+{"questions":{"is_urgent":{"type":"noul","instructions":"Is this urgent?","criteria":{"true":"urgent","false":"not urgent"}},"department":{"type":"choice","instructions":"Route this item.","criteria":{"billing":null,"technical":"engineering","other":null}},"severity":{"type":"score","instructions":"Rate severity.","criteria":["low","medium","high"]}}}
