@@ -60,6 +60,51 @@ jobs:
           path: artifact
           if-no-files-found: error
 
+  load-artifact-platforms-without-matrix-tests:
+    name: Load ${{ matrix.platform }} artifact with matching DuckDB CLI
+    runs-on: ${{ matrix.runner }}
+    needs: package-platform-artifacts
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux_arm64
+            runner: ubuntu-24.04-arm
+            cli_archive: duckdb_cli-linux-arm64.zip
+          - platform: osx_amd64
+            runner: macos-15-intel
+            cli_archive: duckdb_cli-osx-amd64.zip
+    env:
+      PLATFORM: ${{ matrix.platform }}
+      DUCKDB_CLI_ARCHIVE: ${{ matrix.cli_archive }}
+    steps:
+      - name: Download versioned platform artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: ollama_systemone-v1.5.6-platforms
+          path: artifact
+
+      - name: Download matching DuckDB v1.5.6 CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --silent --show-error \
+            "https://github.com/duckdb/duckdb/releases/download/v1.5.6/${DUCKDB_CLI_ARCHIVE}" \
+            --output duckdb_cli.zip
+          unzip -q duckdb_cli.zip -d duckdb_cli
+          chmod +x duckdb_cli/duckdb
+          duckdb_cli/duckdb --version | grep -F 'v1.5.6'
+
+      - name: Load the emitted extension artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          extension_path="$GITHUB_WORKSPACE/artifact/v1.5.6/$PLATFORM/ollama_systemone.duckdb_extension"
+          test -f "$extension_path"
+          result="$(duckdb_cli/duckdb -unsigned -noheader -list -c \
+            "LOAD '$extension_path'; SELECT extension_name || ':' || CAST(loaded AS VARCHAR) FROM duckdb_extensions() WHERE extension_name = 'ollama_systemone';")"
+          test "$result" = 'ollama_systemone:true'
+
   code-quality-check:
     name: Code Quality Check
     uses: duckdb/extension-ci-tools/.github/workflows/_extension_code_quality.yml@v1.5.6

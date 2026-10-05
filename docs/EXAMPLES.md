@@ -100,10 +100,10 @@ DuckDB's dollar-quoted string keeps the JSON readable without escaping each
 quote. Keep the config valid JSON and do not include a per-call model setting;
 the extension always uses `tev1:0.8b`.
 
-## Python: parameterized call
+## Python: parameterized call with a local build
 
-Install the Python package that matches the extension's DuckDB build, then
-install and load the extension as described in [INSTALL.md](INSTALL.md):
+From the repository root, build the extension and install the matching Python
+package as described in [INSTALL.md](INSTALL.md):
 
 ```sh
 python -m pip install 'duckdb==1.5.6'
@@ -113,9 +113,14 @@ python -m pip install 'duckdb==1.5.6'
 import json
 import duckdb
 
-con = duckdb.connect(":memory:")
-con.install_extension("ollama_systemone", repository="community")
-con.load_extension("ollama_systemone")
+con = duckdb.connect(
+    ":memory:",
+    config={"allow_unsigned_extensions": "true"},
+)
+con.execute("LOAD json")
+con.load_extension(
+    "./build/release/extension/ollama_systemone/ollama_systemone.duckdb_extension"
+)
 
 state = "The customer was charged twice and cannot access the account."
 config = {

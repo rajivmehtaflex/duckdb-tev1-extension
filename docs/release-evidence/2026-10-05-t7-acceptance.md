@@ -7,10 +7,12 @@
 | Local Release build on Linux x86_64, DuckDB v1.5.6 | Passed |
 | Deterministic SQL, request/response, transport, vector, and concurrency checks | Passed; see the final command record and release acceptance matrix below, with the tracked [implementation plan](../superpowers/plans/2026-10-04-duckdb-tev1-systemone.md) |
 | Live Ollama compatibility | Passed 4 tests on Ollama 0.35.1 with `tev1:0.8b`; the model rejects the valid 64-question maximum because of its configured context |
-| Native platform workflow | Configured for 9 platforms and versioned artifacts; no project Actions run is available, so cross-platform build/load evidence is pending |
+| Native platform workflow | Configured for 9 platform artifacts and direct LOAD checks; no project Actions run is available, so cross-platform build/load evidence is pending |
 | External release | Deferred by scope; Community Extensions is the intended route, with no submission or publication performed |
 
 The workflow prepares successful platform artifacts under `v1.5.6/<platform>/`. It does not publish them. The repository's configured Git remote still points to the extension template, so this checkout cannot run the project's platform workflow.
+
+The CI load checks target the emitted `.duckdb_extension` files. Seven targets run the path-based LOAD statement in `test/sql/ollama_systemone.test` during the reusable workflow's SQLLogicTest step. The reusable workflow skips tests for `linux_arm64` and the `osx_amd64` row, so `MainDistributionPipeline.yml` adds post-package jobs on matching `ubuntu-24.04-arm` and `macos-15-intel` runners. Those jobs download the matching DuckDB v1.5.6 CLI from the [official v1.5.6 release](https://github.com/duckdb/duckdb/releases/tag/v1.5.6) and load the packaged artifact by path. This is configured coverage only; none of these project Actions checks has run in this checkout.
 
 The pinned `extension-ci-tools/scripts/modify_distribution_matrix.py` resolves the workflow inputs to these nine targets: `linux_amd64`, `linux_arm64`, `linux_amd64_musl`, `linux_arm64_musl`, `osx_amd64`, `osx_arm64`, `windows_amd64`, `windows_arm64`, and `windows_amd64_mingw`. This verifies the configured matrix definition only; it is not evidence that those builds ran.
 
@@ -90,14 +92,14 @@ The mock runs verify transport scaling, queue reporting, and keep-alive reuse ac
 | Gate | Evidence | Status |
 |---|---|---|
 | T1 pinned scaffold and Release load | DuckDB v1.5.6 Release extension rebuilt with Ninja and loaded in the matching CLI; `duckdb_extensions()` reported `installed=true`, `loaded=true`. The tracked plan retains the completed T1 Debug/Release gate. | Passed |
-| T2 settings and SQL contract | SQLLogicTest: 16 assertions across 2 cases; the tracked implementation plan records registration/settings checks under T2 | Passed |
+| T2 settings and SQL contract | SQLLogicTest: 17 assertions across 2 cases; includes a direct path LOAD of the emitted Linux x86_64 artifact and registration/settings checks | Passed |
 | T3 request contract | Native request contract: 73 checks; `systemone_test_request` CTest passed | Passed |
 | T4 response contract | `systemone_test_response` CTest passed | Passed |
 | T5 bounded dispatcher and lifecycle | Transport CTest and deterministic Python transport mock tests passed; final focused suite below includes the transport tests | Passed |
-| T6 vector SQL integration | 16 SQL assertions; 30 focused benchmark/transport/vector/concurrency tests; native CTest 2/2. The follow-up run includes queued-failure cancellation and deterministic out-of-order slot mapping. | Passed |
+| T6 vector SQL integration | 17 SQL assertions; 30 focused benchmark/transport/vector/concurrency tests; native CTest 2/2. The follow-up run includes queued-failure cancellation and deterministic out-of-order slot mapping. | Passed |
 | T7 live Ollama compatibility | Four tests, including eight questions, source-byte boundary, and documented context rejection | Passed |
 | T7 local benchmark and defaults | Cold/warm results and deterministic mock measurements above | Passed with stated measurement limits |
-| T7 nine-platform build and load matrix | CI workflow configured; requires project GitHub Actions execution | **Pending** |
+| T7 nine-platform build and load matrix | Direct artifact LOAD checks are configured for all nine targets; requires project GitHub Actions execution | **Pending** |
 | Community Extensions submission / publication | Explicitly deferred; neither is required to finish local implementation and testing | **Deferred; no external publication performed** |
 
 ## Local verification commands
@@ -126,7 +128,7 @@ env NO_PROXY='*' no_proxy='*' SYSTEMONE_RUN_LIVE_OLLAMA=1 \
 Results:
 
 - Release extension, transport test driver, and benchmark targets built successfully with Ninja `-j4`.
-- `make test`: 16 assertions passed in 2 SQLLogicTest cases.
+- `make test`: 17 assertions passed in 2 SQLLogicTest cases, including a direct LOAD of the emitted Linux x86_64 `.duckdb_extension` file.
 - Native request/response CTest: 2/2 passed.
 - Focused Python benchmark, transport, vector, and concurrency suite: 30 passed.
 - Deterministic overlap regression: 15 consecutive isolated passes; keep-alive connection reuse regression: 20 consecutive isolated passes.

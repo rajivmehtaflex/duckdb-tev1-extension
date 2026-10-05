@@ -58,6 +58,7 @@ For a local development build, load the resulting binary by path. In the CLI:
 ```
 
 ```sql
+LOAD json;
 LOAD './build/release/extension/ollama_systemone/ollama_systemone.duckdb_extension';
 ```
 
@@ -74,6 +75,7 @@ con = duckdb.connect(
     ":memory:",
     config={"allow_unsigned_extensions": "true"},
 )
+con.execute("LOAD json")
 con.load_extension(
     "./build/release/extension/ollama_systemone/ollama_systemone.duckdb_extension"
 )

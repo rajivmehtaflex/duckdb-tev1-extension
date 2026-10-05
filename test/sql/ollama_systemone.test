@@ -2,6 +2,9 @@
 # description: verify extension loading, NULL handling, and server-free request validation
 # group: [sql]
 
+statement ok
+LOAD 'build/release/extension/ollama_systemone/ollama_systemone.duckdb_extension';
+
 require ollama_systemone
 
 query I
