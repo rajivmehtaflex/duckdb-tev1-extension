@@ -94,7 +94,7 @@ The mock runs verify transport scaling, queue reporting, and keep-alive reuse ac
 | T3 request contract | Native request contract: 73 checks; `systemone_test_request` CTest passed | Passed |
 | T4 response contract | `systemone_test_response` CTest passed | Passed |
 | T5 bounded dispatcher and lifecycle | Transport CTest and deterministic Python transport mock tests passed; final focused suite below includes the transport tests | Passed |
-| T6 vector SQL integration | 16 SQL assertions and 27 focused vector/concurrency/transport tests passed at T6; final focused suite below adds the two benchmark tests | Passed |
+| T6 vector SQL integration | 16 SQL assertions; 30 focused benchmark/transport/vector/concurrency tests; native CTest 2/2. The follow-up run includes queued-failure cancellation and deterministic out-of-order slot mapping. | Passed |
 | T7 live Ollama compatibility | Four tests, including eight questions, source-byte boundary, and documented context rejection | Passed |
 | T7 local benchmark and defaults | Cold/warm results and deterministic mock measurements above | Passed with stated measurement limits |
 | T7 nine-platform build and load matrix | CI workflow configured; requires project GitHub Actions execution | **Pending** |
@@ -102,16 +102,21 @@ The mock runs verify transport scaling, queue reporting, and keep-alive reuse ac
 
 ## Local verification commands
 
-The final local pass completed after documenting the results and before creating the local T7 checkpoint commit:
+The following local verification was rerun after the T6 follow-up fixes on 2026-10-05:
 
 ```sh
 /tmp/tev1-ninja/bin/ninja -C build/release -j4 \
-  ollama_systemone_loadable_extension systemone_transport_benchmark
+  ollama_systemone_loadable_extension systemone_transport_test_driver \
+  systemone_transport_benchmark
 build/release/duckdb -c "LOAD './build/release/extension/ollama_systemone/ollama_systemone.duckdb_extension'; SELECT extension_name, installed, loaded FROM duckdb_extensions() WHERE extension_name = 'ollama_systemone';"
 make test
+ctest --test-dir build/release/extension/ollama_systemone --output-on-failure
 /usr/local/py-utils/venvs/pytest/bin/python -m pytest -q \
   test/python/test_benchmark.py test/python/test_transport.py \
   test/python/test_vectorized.py test/python/test_concurrency.py
+env NO_PROXY='*' no_proxy='*' SYSTEMONE_RUN_LIVE_OLLAMA=1 \
+  /usr/local/py-utils/venvs/pytest/bin/python -m pytest -q -s \
+  test/python/test_live_ollama.py
 /tmp/tev1-actionlint/actionlint -color \
   -ignore 'label "ollama-systemone" is unknown' \
   .github/workflows/MainDistributionPipeline.yml \
@@ -120,10 +125,11 @@ make test
 
 Results:
 
-- Release extension and benchmark targets built successfully with Ninja `-j4`.
+- Release extension, transport test driver, and benchmark targets built successfully with Ninja `-j4`.
 - `make test`: 16 assertions passed in 2 SQLLogicTest cases.
 - Native request/response CTest: 2/2 passed.
-- Focused Python benchmark, transport, vector, and concurrency suite: 29 passed.
+- Focused Python benchmark, transport, vector, and concurrency suite: 30 passed.
+- Deterministic overlap regression: 15 consecutive isolated passes; keep-alive connection reuse regression: 20 consecutive isolated passes.
 - Opt-in live Ollama compatibility suite: 4 passed.
 - Actionlint passed; the one ignored rule is the repository's custom self-hosted runner label `ollama-systemone`.
 - Python syntax compilation and `git diff --check` passed.

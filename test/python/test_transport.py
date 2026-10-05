@@ -150,7 +150,7 @@ def test_keep_alive_reuses_http_connections(driver: Path, mock_server: dict[str,
     assert len(output["results"]) == 6
     assert all(result["success"] for result in output["results"])
     assert server_stats["requests"] == 6
-    assert server_stats["connection_count"] <= 2
+    assert server_stats["connection_count"] <= 2, server_stats
     assert all("keep-alive" in header for header in server_stats["connection_headers"])
 
 
@@ -285,6 +285,21 @@ def test_queued_handle_cancellation_does_not_stop_other_accepted_work(
     assert results[3]["success"] is True
     assert output["stats"]["cancelled_count"] == 1
     assert server_stats["states"] == {"delay:500:queued-active": 1, "queued-survivor": 1}
+
+
+def test_failed_lower_slot_cancels_higher_queued_work_before_promotion(
+    driver: Path, mock_server: dict[str, Any]
+) -> None:
+    output = run_driver(driver, "higher_failure_queue", mock_server["url"])
+    results = _results(output)
+    server_stats = _get_json(mock_server["stats_url"])
+
+    assert results[1]["error"] == "MODEL_NOT_FOUND"
+    assert results[2]["error"] == "CANCELLED"
+    assert output["stats"]["active"] == 0
+    assert output["stats"]["queued"] == 0
+    assert server_stats["requests"] == 1
+    assert server_stats["states"] == {"delay:100:missing-model": 1}
 
 
 def test_closed_dispatcher_rejects_new_admission_immediately(driver: Path, mock_server: dict[str, Any]) -> None:

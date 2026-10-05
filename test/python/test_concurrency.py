@@ -120,7 +120,7 @@ def test_request_failure_reports_its_input_slot(
 SET ollama_max_inflight = 1;
 SET ollama_queue_capacity = 1;
 SELECT ollama_systemone(
-    CASE WHEN i = 1 THEN 'missing-model' ELSE 'success-' || CAST(i AS VARCHAR) END,
+    CASE WHEN i = 1 THEN 'delay:250:missing-model' ELSE 'success-' || CAST(i AS VARCHAR) END,
     '{CONFIG}'
 )
 FROM range(100) AS input(i);
@@ -132,7 +132,7 @@ FROM range(100) AS input(i);
     assert completed.returncode != 0, diagnostic
     assert "slot 2" in diagnostic.lower() or "row 2" in diagnostic.lower(), diagnostic
     stats = _read_stats(systemone_mock_server)
-    assert stats["states"].get("missing-model") == 1
+    assert stats["states"].get("delay:250:missing-model") == 1
     assert stats["requests"] == 2, stats
     assert stats["active"] == 0
 

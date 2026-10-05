@@ -152,6 +152,7 @@ void OllamaSystemOneFunction(DataChunk &args, ExpressionState &state, Vector &re
 	std::unordered_map<std::string, ValidatedConfig> config_cache;
 	std::vector<PendingRequest> pending;
 	pending.reserve(static_cast<std::size_t>(std::min<uint64_t>(runtime.max_pending, 4096)));
+	auto request_group = std::make_shared<RequestGroup>();
 	std::optional<InvocationFailure> failure;
 	idx_t next_slot = 0;
 	bool interrupted_during_admission = false;
@@ -170,6 +171,7 @@ void OllamaSystemOneFunction(DataChunk &args, ExpressionState &state, Vector &re
 	auto record_failure = [&](idx_t slot, std::string diagnostic, bool invalid_input) {
 		if (!failure || slot < failure->slot) {
 			failure = InvocationFailure {slot, std::move(diagnostic), invalid_input};
+			request_group->RecordFailure(static_cast<uint64_t>(slot));
 			cancel_higher_slots();
 		}
 	};
@@ -311,7 +313,8 @@ void OllamaSystemOneFunction(DataChunk &args, ExpressionState &state, Vector &re
 				return false;
 			};
 			auto handle = runtime.dispatcher->Submit(static_cast<uint64_t>(slot), std::move(*owned_request),
-			                                         std::move(admission_cancelled), admission_cancel_check);
+			                                         std::move(admission_cancelled), admission_cancel_check,
+			                                         request_group);
 			if (!handle.IsValid()) {
 				auto rejected = handle.completion.get();
 				if (context.IsInterrupted() || interrupted_during_admission) {

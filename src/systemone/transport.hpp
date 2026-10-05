@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <future>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <string>
 
@@ -45,6 +46,23 @@ struct TransportResult {
 	uint64_t queue_wait_ms = 0;
 	uint64_t request_duration_ms = 0;
 	uint64_t retries = 0;
+};
+
+class RequestGroup {
+public:
+	void RecordFailure(uint64_t slot) noexcept {
+		auto current = first_failure_slot.load(std::memory_order_relaxed);
+		while (slot < current &&
+		       !first_failure_slot.compare_exchange_weak(current, slot, std::memory_order_relaxed)) {
+		}
+	}
+
+	bool ShouldCancel(uint64_t slot) const noexcept {
+		return slot > first_failure_slot.load(std::memory_order_relaxed);
+	}
+
+private:
+	std::atomic<uint64_t> first_failure_slot {std::numeric_limits<uint64_t>::max()};
 };
 
 class RequestCompletion {
@@ -118,7 +136,8 @@ public:
 
 	RequestHandle Submit(uint64_t slot, OwnedRequest request,
 	                     std::shared_ptr<std::atomic<bool>> admission_cancelled = nullptr,
-	                     std::function<bool()> admission_cancel_check = {});
+	                     std::function<bool()> admission_cancel_check = {},
+	                     std::shared_ptr<RequestGroup> request_group = nullptr);
 	void Cancel(const RequestHandle &handle) noexcept;
 	void Cancel() noexcept;
 	TransportStats StatsSnapshot() const;

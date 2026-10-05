@@ -31,6 +31,7 @@ class State:
             self.states: dict[str, int] = {}
             self.completed_states: list[str] = []
             self.connection_headers: list[str] = []
+            self.overlap_gates: dict[str, dict[str, threading.Event]] = {}
 
     def begin(self, client: tuple[str, int], state: str, connection: str) -> tuple[int, bool]:
         with self.lock:
@@ -42,7 +43,41 @@ class State:
             self.connections.add(connection_id)
             self.states[state] = self.states.get(state, 0) + 1
             self.connection_headers.append(connection.lower())
+            gate = self._overlap_gate_parts(state)
+            if gate is not None:
+                group, role = gate
+                events = self.overlap_gates.setdefault(
+                    group,
+                    {
+                        "slow_started": threading.Event(),
+                        "fast_completed": threading.Event(),
+                    },
+                )
+                if role == "slow":
+                    events["slow_started"].set()
             return self.epoch, reused
+
+    @staticmethod
+    def _overlap_gate_parts(state: str) -> tuple[str, str] | None:
+        parts = state.split(":", 2)
+        if len(parts) == 3 and parts[0] == "gate" and parts[2] in {"slow", "fast"}:
+            return parts[1], parts[2]
+        return None
+
+    def wait_for_overlap_peer(self, state: str) -> None:
+        gate = self._overlap_gate_parts(state)
+        if gate is None:
+            return
+        group, role = gate
+        with self.lock:
+            events = self.overlap_gates.get(group)
+        if events is None:
+            return
+        # Bound the rendezvous so a broken caller cannot stall the mock server.
+        if role == "fast":
+            events["slow_started"].wait(timeout=5)
+        else:
+            events["fast_completed"].wait(timeout=5)
 
     def record_reuse_close(self, epoch: int) -> None:
         with self.lock:
@@ -54,6 +89,11 @@ class State:
             if epoch == self.epoch:
                 self.active -= 1
                 self.completed_states.append(state)
+                gate = self._overlap_gate_parts(state)
+                if gate is not None and gate[1] == "fast":
+                    events = self.overlap_gates.get(gate[0])
+                    if events is not None:
+                        events["fast_completed"].set()
 
     def snapshot(self) -> dict[str, Any]:
         with self.lock:
@@ -203,6 +243,7 @@ class Handler(BaseHTTPRequestHandler):
                 )
             else:
                 status, payload, content_type, delay_ms = response_for(body, state_name)
+                self.state.wait_for_overlap_peer(state_name)
             if delay_ms:
                 time.sleep(delay_ms / 1000.0)
             self._send(status, payload, content_type)

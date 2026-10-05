@@ -25,6 +25,7 @@ namespace {
 using namespace std::chrono_literals;
 using duckdb::systemone::BuildRequest;
 using duckdb::systemone::OwnedRequest;
+using duckdb::systemone::RequestGroup;
 using duckdb::systemone::RequestCompletion;
 using duckdb::systemone::RequestHandle;
 using duckdb::systemone::SettingsSnapshot;
@@ -466,6 +467,23 @@ Json RunQueuedCancellation(const std::string &endpoint) {
 	return MakeOutput(results, completion_order, dispatcher.StatsSnapshot());
 }
 
+Json RunHigherSlotFailureQueue(const std::string &endpoint) {
+	auto settings = MakeSettings(endpoint, 1, 1, 5000);
+	TransportDispatcher dispatcher(settings);
+	auto request_group = std::make_shared<RequestGroup>();
+	RequestHandle failure =
+	    dispatcher.Submit(1, MakeRequest("delay:100:missing-model", settings), nullptr, {}, request_group);
+	RequestHandle higher =
+	    dispatcher.Submit(2, MakeRequest("higher-after-failure", settings), nullptr, {}, request_group);
+	std::vector<TransportResult> results;
+	std::vector<uint64_t> completion_order;
+	AppendResult(failure.completion.get(), results, completion_order);
+	AppendResult(higher.completion.get(), results, completion_order);
+	failure = RequestHandle();
+	higher = RequestHandle();
+	return MakeOutput(results, completion_order, dispatcher.StatsSnapshot());
+}
+
 Json RunClosedAdmission(const std::string &endpoint) {
 	auto settings = MakeSettings(endpoint, 1, 0);
 	TransportDispatcher dispatcher(settings);
@@ -544,6 +562,8 @@ int main(int argc, char **argv) {
 			output = RunAdmissionCancellation(endpoint);
 		} else if (mode == "queued_cancel") {
 			output = RunQueuedCancellation(endpoint);
+		} else if (mode == "higher_failure_queue") {
+			output = RunHigherSlotFailureQueue(endpoint);
 		} else if (mode == "closed_admission") {
 			output = RunClosedAdmission(endpoint);
 		} else if (mode == "destroy_outstanding") {

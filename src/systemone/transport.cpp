@@ -234,8 +234,9 @@ public:
 
 	RequestHandle Submit(uint64_t slot, OwnedRequest request,
 	                     const std::shared_ptr<std::atomic<bool>> &admission_cancelled,
-	                     const std::function<bool()> &admission_cancel_check) {
-		auto job = std::make_shared<Job>(this, slot, std::move(request));
+	                     const std::function<bool()> &admission_cancel_check,
+	                     std::shared_ptr<RequestGroup> request_group) {
+		auto job = std::make_shared<Job>(this, slot, std::move(request), std::move(request_group));
 		auto completion = job->promise.get_future();
 		auto permit_taken = std::make_shared<bool>(false);
 		std::weak_ptr<Impl> weak_owner = shared_from_this();
@@ -249,7 +250,8 @@ public:
 		std::unique_lock<std::mutex> lock(mutex);
 		bool callback_cancelled = false;
 		auto admission_was_cancelled = [&]() {
-			return callback_cancelled || IsAdmissionCancelled(admission_cancelled);
+			return callback_cancelled || IsAdmissionCancelled(admission_cancelled) ||
+			       (job->request_group != nullptr && job->request_group->ShouldCancel(slot));
 		};
 		while (!closing && !admission_was_cancelled() && !CanAdmitLocked()) {
 			admission_cv.wait_for(lock, std::chrono::milliseconds(10));
@@ -322,7 +324,7 @@ public:
 				finish_now = std::move(job);
 			} else if (job->location == JobLocation::INBOX) {
 				EraseJob(loops[job->loop_index].inbox, job);
-				ReleaseActiveSlotLocked();
+				ReleaseActiveSlotLocked(job->loop_index);
 				job->location = JobLocation::FINISHED;
 				jobs.erase(found);
 				result = BuildResult(job, TransportErrorCategory::CANCELLED,
@@ -361,14 +363,15 @@ public:
 				finish_now.emplace_back(std::move(job), std::move(result));
 			}
 			stats.queued = 0;
-			for (auto &loop : loops) {
+			for (std::size_t loop_index = 0; loop_index < loops.size(); ++loop_index) {
+				auto &loop = loops[loop_index];
 				while (!loop.inbox.empty()) {
 					auto job = loop.inbox.front();
 					loop.inbox.pop_front();
 					job->location = JobLocation::FINISHED;
 					job->cancel_requested.store(true, std::memory_order_relaxed);
 					jobs.erase(job->id);
-					ReleaseActiveSlotLocked();
+					ReleaseActiveSlotLocked(loop_index);
 					auto result = BuildResult(job, TransportErrorCategory::CANCELLED,
 					                          DiagnosticFor(TransportErrorCategory::CANCELLED));
 					RecordCompletionLocked(result);
@@ -408,14 +411,15 @@ private:
 	};
 
 	struct Job {
-		Job(Impl *owner_p, uint64_t slot_p, OwnedRequest request_p)
-		    : owner(owner_p), slot(slot_p), request(std::move(request_p)) {
+		Job(Impl *owner_p, uint64_t slot_p, OwnedRequest request_p, std::shared_ptr<RequestGroup> request_group_p)
+		    : owner(owner_p), slot(slot_p), request(std::move(request_p)), request_group(std::move(request_group_p)) {
 		}
 
 		Impl *owner;
 		uint64_t id = 0;
 		uint64_t slot;
 		OwnedRequest request;
+		std::shared_ptr<RequestGroup> request_group;
 		std::promise<TransportResult> promise;
 		std::atomic<bool> cancel_requested {false};
 		JobLocation location = JobLocation::NEW;
@@ -440,6 +444,7 @@ private:
 		CURLM *multi = nullptr;
 		std::thread thread;
 		std::deque<std::shared_ptr<Job>> inbox;
+		uint64_t reserved_jobs = 0;
 	};
 
 	bool IsAdmissionCancelled(const std::shared_ptr<std::atomic<bool>> &token) const {
@@ -463,10 +468,18 @@ private:
 	}
 
 	void ReserveForLoopLocked(const std::shared_ptr<Job> &job) {
-		const std::size_t loop_index = next_loop++ % TRANSPORT_EVENT_LOOP_COUNT;
+		std::size_t loop_index = static_cast<std::size_t>(next_loop % TRANSPORT_EVENT_LOOP_COUNT);
+		for (std::size_t offset = 1; offset < TRANSPORT_EVENT_LOOP_COUNT; ++offset) {
+			const auto candidate = static_cast<std::size_t>((next_loop + offset) % TRANSPORT_EVENT_LOOP_COUNT);
+			if (loops[candidate].reserved_jobs < loops[loop_index].reserved_jobs) {
+				loop_index = candidate;
+			}
+		}
+		next_loop = (loop_index + 1) % TRANSPORT_EVENT_LOOP_COUNT;
 		job->loop_index = loop_index;
 		job->location = JobLocation::INBOX;
 		loops[loop_index].inbox.push_back(job);
+		++loops[loop_index].reserved_jobs;
 		++active_slots;
 		stats.active = active_slots;
 	}
@@ -480,9 +493,62 @@ private:
 		}
 	}
 
-	void ReleaseActiveSlotLocked() {
+	void CancelHigherGroupJobsLocked(
+	    const std::shared_ptr<RequestGroup> &request_group,
+	    std::vector<std::pair<std::shared_ptr<Job>, TransportResult>> &finish_now) {
+		if (request_group == nullptr) {
+			return;
+		}
+		auto finish_queued = [&](const std::shared_ptr<Job> &job, bool release_active) {
+			job->cancel_requested.store(true, std::memory_order_relaxed);
+			job->location = JobLocation::FINISHED;
+			jobs.erase(job->id);
+			if (release_active) {
+				ReleaseActiveSlotLocked(job->loop_index);
+			}
+			auto result = BuildResult(job, TransportErrorCategory::CANCELLED,
+			                          DiagnosticFor(TransportErrorCategory::CANCELLED));
+			RecordCompletionLocked(result);
+			finish_now.emplace_back(job, std::move(result));
+		};
+
+		for (auto iter = pending.begin(); iter != pending.end();) {
+			auto job = *iter;
+			if (job->request_group == request_group && request_group->ShouldCancel(job->slot)) {
+				iter = pending.erase(iter);
+				finish_queued(job, false);
+			} else {
+				++iter;
+			}
+		}
+		stats.queued = static_cast<uint64_t>(pending.size());
+
+		for (auto &loop : loops) {
+			for (auto iter = loop.inbox.begin(); iter != loop.inbox.end();) {
+				auto job = *iter;
+				if (job->request_group == request_group && request_group->ShouldCancel(job->slot)) {
+					iter = loop.inbox.erase(iter);
+					finish_queued(job, true);
+				} else {
+					++iter;
+				}
+			}
+		}
+
+		for (auto &entry : jobs) {
+			auto &job = entry.second;
+			if (job->request_group == request_group && request_group->ShouldCancel(job->slot)) {
+				job->cancel_requested.store(true, std::memory_order_relaxed);
+			}
+		}
+	}
+
+	void ReleaseActiveSlotLocked(std::size_t loop_index) {
 		if (active_slots > 0) {
 			--active_slots;
+		}
+		if (loops[loop_index].reserved_jobs > 0) {
+			--loops[loop_index].reserved_jobs;
 		}
 		stats.active = active_slots;
 	}
@@ -539,6 +605,13 @@ private:
 
 	void CompleteFromLoop(const std::shared_ptr<Job> &job, TransportResult result) {
 		bool should_set = false;
+		std::vector<std::pair<std::shared_ptr<Job>, TransportResult>> cancelled_higher;
+		const auto request_group = job->request_group;
+		const bool failed = result.error != TransportErrorCategory::NONE &&
+		                    result.error != TransportErrorCategory::CANCELLED;
+		if (failed && request_group != nullptr) {
+			request_group->RecordFailure(job->slot);
+		}
 		{
 			std::lock_guard<std::mutex> guard(mutex);
 			if (job->location == JobLocation::FINISHED) {
@@ -546,16 +619,22 @@ private:
 			}
 			if (job->location == JobLocation::ACTIVE || job->location == JobLocation::STARTING ||
 			    job->location == JobLocation::INBOX) {
-				ReleaseActiveSlotLocked();
+				ReleaseActiveSlotLocked(job->loop_index);
 			}
 			job->location = JobLocation::FINISHED;
 			jobs.erase(job->id);
 			RecordCompletionLocked(result);
+			if (failed && request_group != nullptr) {
+				CancelHigherGroupJobsLocked(request_group, cancelled_higher);
+			}
 			PromotePendingLocked();
 			should_set = true;
 		}
 		if (should_set) {
 			SetPromise(job, std::move(result));
+		}
+		for (auto &entry : cancelled_higher) {
+			SetPromise(entry.first, std::move(entry.second));
 		}
 		admission_cv.notify_all();
 		loop_cv.notify_all();
@@ -1008,8 +1087,10 @@ TransportDispatcher::~TransportDispatcher() = default;
 
 RequestHandle TransportDispatcher::Submit(uint64_t slot, OwnedRequest request,
                                           std::shared_ptr<std::atomic<bool>> admission_cancelled,
-                                          std::function<bool()> admission_cancel_check) {
-	return impl->Submit(slot, std::move(request), admission_cancelled, admission_cancel_check);
+                                          std::function<bool()> admission_cancel_check,
+                                          std::shared_ptr<RequestGroup> request_group) {
+	return impl->Submit(slot, std::move(request), admission_cancelled, admission_cancel_check,
+	                    std::move(request_group));
 }
 
 void TransportDispatcher::Cancel(const RequestHandle &handle) noexcept {

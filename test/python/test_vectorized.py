@@ -240,23 +240,28 @@ def test_delayed_response_keeps_original_row_order(
     fast_config = _sql_string(_question_config("fast_row_question", "choice"))
     sql = f"""
         {_load_json_extension()}
+        SET threads = 1;
+        SET ollama_max_inflight = 2;
+        SET ollama_queue_capacity = 0;
+        CREATE TEMP TABLE vector_rows AS
+        SELECT * FROM (VALUES
+            (1, 'gate:overlap:slow', CAST({slow_config} AS JSON)),
+            (2, 'gate:overlap:fast', CAST({fast_config} AS JSON))
+        ) AS source(slot, state, config);
         SELECT slot, state, ollama_systemone(state, config) AS result
-        FROM (VALUES
-            (1, 'delay:350:slow_row', CAST({slow_config} AS JSON)),
-            (2, 'fast_row', CAST({fast_config} AS JSON))
-        ) AS input_rows(slot, state, config)
+        FROM vector_rows
     """
     completed = run_systemone_sql(sql, endpoint=systemone_mock_server["url"])
 
     rows = _rows(completed)
     by_slot = {row["slot"]: row for row in rows}
     assert set(by_slot) == {1, 2}
-    assert by_slot[1]["state"] == "delay:350:slow_row"
-    assert by_slot[2]["state"] == "fast_row"
+    assert by_slot[1]["state"] == "gate:overlap:slow"
+    assert by_slot[2]["state"] == "gate:overlap:fast"
     assert list(_decode_json(by_slot[1]["result"])["answers"]) == ["slow_row_question"]
     assert list(_decode_json(by_slot[2]["result"])["answers"]) == ["fast_row_question"]
     server_stats = _stats(systemone_mock_server)
     assert server_stats["requests"] == 2
-    assert server_stats["max_active"] == 2
-    assert server_stats["completed_states"] == ["fast_row", "delay:350:slow_row"]
-    assert server_stats["states"] == {"delay:350:slow_row": 1, "fast_row": 1}
+    assert server_stats["max_active"] == 2, server_stats
+    assert server_stats["completed_states"] == ["gate:overlap:fast", "gate:overlap:slow"]
+    assert server_stats["states"] == {"gate:overlap:slow": 1, "gate:overlap:fast": 1}
